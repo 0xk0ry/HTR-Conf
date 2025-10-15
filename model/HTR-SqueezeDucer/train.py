@@ -354,6 +354,12 @@ def main():
                 r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
             )
         scaler.scale(loss).backward()
+        # Unscale gradients so SAM can compute perturbation in FP32 and GradScaler records inf checks
+        if getattr(args, 'amp', False):
+            try:
+                scaler.unscale_(optimizer.base_optimizer)
+            except Exception:
+                pass
         optimizer.first_step(zero_grad=True)
 
        # ---- SECOND SAM PASS: recompute tri-CTC loss at the perturbed weights ----
@@ -364,6 +370,11 @@ def main():
                 r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
             )
         scaler.scale(loss2).backward()
+        if getattr(args, 'amp', False):
+            try:
+                scaler.unscale_(optimizer.base_optimizer)
+            except Exception:
+                pass
         optimizer.second_step(zero_grad=True)
         scaler.update()
 
