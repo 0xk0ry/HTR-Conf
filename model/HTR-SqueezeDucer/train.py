@@ -46,24 +46,22 @@ def encode_batch_rnnt(texts, converter, bos_id, blank_id, device):
       tgt_lengths: [B] int64 lengths per item (no BOS)
     """
     # converter.encode returns (flat_targets, lengths) with 1-based ids for real symbols, 0 reserved for CTC blank
-    tgt_flat, tgt_lengths = converter.encode(texts)  # IntTensor on cuda if available
-    # Map CTC ids (1..V-1 with 0 reserved for CTC blank) -> RNNT label ids (0..V-2)
-    # so that RNNT blank stays at V-1 (args.nb_cls-1)
-    tgt_flat_rnnt = (tgt_flat.long() - 1).clamp(min=0)
+    tgt_flat, tgt_lengths = converter.encode(texts)  # IntTensor (labels in 1..V-1), 0 reserved for BOS here
     # Create padded targets y (without BOS)
     B = len(texts)
     max_u = int(tgt_lengths.max().item()) if B > 0 else 0
-    y = torch.full((B, max_u), fill_value=blank_id, dtype=torch.long, device=device)
+    # Padded targets for RNNT loss [B, U] (values on padded positions are ignored)
+    y = torch.zeros((B, max_u), dtype=torch.long, device=device)
     offset = 0
     for b, L in enumerate(tgt_lengths.tolist()):
         if L > 0:
-            y[b, :L] = tgt_flat_rnnt[offset:offset+L]
+            y[b, :L] = tgt_flat[offset:offset+L]
         offset += L
     # Prepend BOS
     y_in = torch.full((B, max_u + 1), fill_value=bos_id, dtype=torch.long, device=device)
     if max_u > 0:
         y_in[:, 1:] = y
-    return y_in, tgt_flat_rnnt.to(device=device, dtype=torch.long), tgt_lengths.to(device=device, dtype=torch.long)
+    return y_in, y.to(device=device, dtype=torch.long), tgt_lengths.to(device=device, dtype=torch.long)
 
 
 def compute_rnnt_loss(args, model, image, texts, converter):
@@ -74,7 +72,7 @@ def compute_rnnt_loss(args, model, image, texts, converter):
     device = image.device
     BOS_ID, BLANK_ID = build_rnnt_special_tokens(args)
     # Prepare RNNT inputs
-    y_in, y_flat, y_len = encode_batch_rnnt(texts, converter, BOS_ID, BLANK_ID, device)
+    y_in, y_pad, y_len = encode_batch_rnnt(texts, converter, BOS_ID, BLANK_ID, device)
     # Forward RNNT
     logits, T = model.forward_rnnt(image, y_in)  # [B, T, U, V]
     # Lengths as int32 tensors
@@ -82,7 +80,7 @@ def compute_rnnt_loss(args, model, image, texts, converter):
     target_lengths = y_len.to(dtype=torch.int32)
 
     loss_rnnt = rnnt_loss(
-        logits.float(), y_flat.int(), logit_lengths, target_lengths,
+        logits.float(), y_pad.to(dtype=torch.int32), logit_lengths, target_lengths,
         blank=model.blank_id, reduction="mean", clamp=0.0
     )
     return loss_rnnt
@@ -369,6 +367,11 @@ def main():
 
             writer.add_scalar('./Train/lr', current_lr, nb_iter)
             writer.add_scalar('./Train/train_loss', train_loss_avg, nb_iter)
+            # Per-loss scalars for TensorBoard
+            writer.add_scalar('./Train/CTC', loss_ctc.mean(), nb_iter)
+            writer.add_scalar('./Train/SGM', loss_sgm.mean(), nb_iter)
+            if getattr(args, 'rnnt_lambda', 0.0) > 0.0:
+                writer.add_scalar('./Train/RNNT', loss_rnnt.mean(), nb_iter)
             if wandb is not None:
                 wandb.log({
                     'train/lr': current_lr,
