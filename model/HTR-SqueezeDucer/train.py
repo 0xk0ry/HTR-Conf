@@ -23,6 +23,7 @@ import numpy as np
 import re
 import importlib
 from model.sgm_head import SGMHead, build_sgm_vocab, make_context_batch
+from torch.cuda.amp import autocast, GradScaler
 
 
 # ---------------- RNNT helpers -----------------
@@ -46,7 +47,8 @@ def encode_batch_rnnt(texts, converter, bos_id, blank_id, device):
       tgt_lengths: [B] int64 lengths per item (no BOS)
     """
     # converter.encode returns (flat_targets, lengths) with 1-based ids for real symbols, 0 reserved for CTC blank
-    tgt_flat, tgt_lengths = converter.encode(texts)  # IntTensor (labels in 1..V-1), 0 reserved for BOS here
+    # IntTensor (labels in 1..V-1), 0 reserved for BOS here
+    tgt_flat, tgt_lengths = converter.encode(texts)
     # Create padded targets y (without BOS)
     B = len(texts)
     max_u = int(tgt_lengths.max().item()) if B > 0 else 0
@@ -58,7 +60,8 @@ def encode_batch_rnnt(texts, converter, bos_id, blank_id, device):
             y[b, :L] = tgt_flat[offset:offset+L]
         offset += L
     # Prepend BOS
-    y_in = torch.full((B, max_u + 1), fill_value=bos_id, dtype=torch.long, device=device)
+    y_in = torch.full((B, max_u + 1), fill_value=bos_id,
+                      dtype=torch.long, device=device)
     if max_u > 0:
         y_in[:, 1:] = y
     return y_in, y.to(device=device, dtype=torch.long), tgt_lengths.to(device=device, dtype=torch.long)
@@ -66,13 +69,22 @@ def encode_batch_rnnt(texts, converter, bos_id, blank_id, device):
 
 def compute_rnnt_loss(args, model, image, texts, converter):
     if not HAS_TORCHAUDIO_RNNT:
-        raise RuntimeError("torchaudio rnnt_loss not available. Install torchaudio>=2.1 or add warprnnt.")
+        raise RuntimeError(
+            "torchaudio rnnt_loss not available. Install torchaudio>=2.1 or add warprnnt.")
 
     B = image.size(0)
     device = image.device
     BOS_ID, BLANK_ID = build_rnnt_special_tokens(args)
     # Prepare RNNT inputs
-    y_in, y_pad, y_len = encode_batch_rnnt(texts, converter, BOS_ID, BLANK_ID, device)
+    y_in, y_pad, y_len = encode_batch_rnnt(
+        texts, converter, BOS_ID, BLANK_ID, device)
+      # Optionally cap target length to reduce U dimension
+    U_cap = int(getattr(args, 'rnnt_max_target_len', 0) or 0)
+    if U_cap > 0:
+        max_u = min(U_cap, y_pad.size(1))
+        y_len = torch.clamp(y_len, max=max_u)
+        y_pad = y_pad[:, :max_u]
+        y_in = y_in[:, :max_u+1]
     # Forward RNNT
     logits, T = model.forward_rnnt(image, y_in)  # [B, T, U, V]
     # Lengths as int32 tensors
@@ -122,6 +134,8 @@ def compute_losses(
             max_span_length=max_span_length if max_span_length is not None else getattr(
                 args, 'max_span_length', 0)
         )   # [B, N, V_ctc], [B, N, D]
+        # Avoid double backprop through encoder via SGM: detach features
+        feats = feats.detach()
 
     # 2) CTC loss
     text_ctc, length_ctc = converter.encode(
@@ -321,6 +335,7 @@ def main():
     train_loss_count = train_loss_count
     #### ---- train & eval ---- ####
     logger.info('Start training...')
+    scaler = GradScaler(enabled=getattr(args, 'amp', False))
     for nb_iter in range(start_iter, args.total_iter):
 
         optimizer, current_lr = utils.update_lr_cos(
@@ -332,22 +347,25 @@ def main():
         text, length = converter.encode(batch[1])
         batch_size = image.size(0)
 
+    with autocast(enabled=getattr(args, 'amp', False)):
         loss, loss_ctc, loss_sgm, loss_rnnt = tri_masked_loss(
             args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
             nb_iter, ctc_lambda, sgm_lambda, stoi,
             r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
         )
-        loss.backward()
-        optimizer.first_step(zero_grad=True)
+    scaler.scale(loss).backward()
+      optimizer.first_step(zero_grad=True)
 
-        # ---- SECOND SAM PASS: recompute tri-CTC loss at the perturbed weights ----
-        loss2, _, _, _ = tri_masked_loss(
-            args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-            nb_iter, ctc_lambda, sgm_lambda, stoi,
-            r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-        )
-        loss2.backward()
+       # ---- SECOND SAM PASS: recompute tri-CTC loss at the perturbed weights ----
+       with autocast(enabled=getattr(args, 'amp', False)):
+            loss2, _, _, _ = tri_masked_loss(
+                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+            )
+        scaler.scale(loss2).backward()
         optimizer.second_step(zero_grad=True)
+        scaler.update()
 
         model.zero_grad()
         model_ema.update(model, num_updates=nb_iter / 2)

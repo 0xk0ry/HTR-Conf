@@ -156,6 +156,11 @@ def get_args_parser():
                         help='RNNT loss weight (set >0 to enable RNNT multi-task)')
     parser.add_argument('--rnnt-after-warmup', default=0, type=int,
                         help='Start adding RNNT loss after this many iters (0 = immediately)')
+    parser.add_argument('--rnnt-max-target-len', default=64, type=int,
+                        help='If > 0, cap RNNT target length per sample to reduce memory (U dimension). 0 = no cap')
+    # Mixed precision
+    parser.add_argument('--amp', action='store_true', default=False,
+                        help='Enable Automatic Mixed Precision (AMP) to reduce memory usage')
     # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph)
     parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie'],
                         help='Language setting: eng uses dynamic alphabet, vie uses predefined Vietnamese ralph')

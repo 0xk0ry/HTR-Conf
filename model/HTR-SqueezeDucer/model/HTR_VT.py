@@ -518,6 +518,11 @@ class RNNTHead(nn.Module):
         y_in: int64 [B, U]   (includes BOS at y_in[:,0])
         returns g_u: [B, U, pred_dim]  (or projected size)
         """
+        # Ensure LSTM weights are in a single contiguous chunk for cuDNN
+        try:
+            self.rnn.flatten_parameters()
+        except Exception:
+            pass
         x = self.embed(y_in)                  # [B, U, d_model]
         x, _ = self.rnn(x)                    # [B, U, pred_dim]
         return x
