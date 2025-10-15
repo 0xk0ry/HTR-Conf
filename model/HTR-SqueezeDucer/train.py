@@ -23,7 +23,7 @@ import numpy as np
 import re
 import importlib
 from model.sgm_head import SGMHead, build_sgm_vocab, make_context_batch
-from torch.cuda.amp import autocast, GradScaler
+ 
 
 
 # ---------------- RNNT helpers -----------------
@@ -335,7 +335,6 @@ def main():
     train_loss_count = train_loss_count
     #### ---- train & eval ---- ####
     logger.info('Start training...')
-    scaler = GradScaler(enabled=getattr(args, 'amp', False))
     for nb_iter in range(start_iter, args.total_iter):
 
         optimizer, current_lr = utils.update_lr_cos(
@@ -347,36 +346,22 @@ def main():
         text, length = converter.encode(batch[1])
         batch_size = image.size(0)
 
-        with autocast(enabled=getattr(args, 'amp', False)):
-            loss, loss_ctc, loss_sgm, loss_rnnt = tri_masked_loss(
-                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-                nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-            )
-        scaler.scale(loss).backward()
-        # Unscale gradients so SAM can compute perturbation in FP32 and GradScaler records inf checks
-        if getattr(args, 'amp', False):
-            try:
-                scaler.unscale_(optimizer.base_optimizer)
-            except Exception:
-                pass
+        loss, loss_ctc, loss_sgm, loss_rnnt = tri_masked_loss(
+            args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+            nb_iter, ctc_lambda, sgm_lambda, stoi,
+            r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+        )
+        loss.backward()
         optimizer.first_step(zero_grad=True)
 
        # ---- SECOND SAM PASS: recompute tri-CTC loss at the perturbed weights ----
-        with autocast(enabled=getattr(args, 'amp', False)):
-            loss2, _, _, _ = tri_masked_loss(
-                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-                nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-            )
-        scaler.scale(loss2).backward()
-        if getattr(args, 'amp', False):
-            try:
-                scaler.unscale_(optimizer.base_optimizer)
-            except Exception:
-                pass
+        loss2, _, _, _ = tri_masked_loss(
+            args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+            nb_iter, ctc_lambda, sgm_lambda, stoi,
+            r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+        )
+        loss2.backward()
         optimizer.second_step(zero_grad=True)
-        scaler.update()
 
         model.zero_grad()
         model_ema.update(model, num_updates=nb_iter / 2)
