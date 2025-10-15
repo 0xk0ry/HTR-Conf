@@ -152,7 +152,7 @@ def get_args_parser():
     parser.add_argument('--sgm-warmup-iters', default=0,
                         type=int, help='SGM warmup iters, 0 = start immediately')
     # RNNT options
-    parser.add_argument('--rnnt-lambda', default=0.0, type=float,
+    parser.add_argument('--rnnt-lambda', default=0.1, type=float,
                         help='RNNT loss weight (set >0 to enable RNNT multi-task)')
     parser.add_argument('--rnnt-after-warmup', default=0, type=int,
                         help='Start adding RNNT loss after this many iters (0 = immediately)')

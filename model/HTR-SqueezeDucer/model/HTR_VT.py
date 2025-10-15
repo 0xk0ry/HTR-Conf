@@ -661,7 +661,7 @@ class MaskedAutoencoderViT(nn.Module):
             vocab_size=self.nb_cls,
             blank_id=self.blank_id,
             d_model=self.embed_dim,
-            pred_dim=512, pred_layers=1, joint_dim=512, rnn_type="lstm", dropout=0.1
+            pred_dim=256, pred_layers=1, joint_dim=256, rnn_type="lstm", dropout=0.1
         )
         self.initialize_weights()
 
