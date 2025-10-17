@@ -46,39 +46,43 @@ def SameTrCollate(batch, args):
 
 
 class myLoadDS(Dataset):
-    def __init__(self, flist, dpath, img_size=[512, 32], ralph=None, fmin=True, mln=None):
+    def __init__(self, flist, dpath, img_size=[512, 32], ralph=None, fmin=True, mln=None, lang: str = 'eng'):
         self.fns = get_files(flist, dpath)
         self.tlbls = get_labels(self.fns)
         self.img_size = img_size
-
-        if ralph == None:
-            alph = get_alphabet(self.tlbls)
-            self.ralph = dict(zip(alph.values(), alph.keys()))
-            self.alph = alph
-        else:
+        # Build reverse alphabet (index -> char) based on language and/or provided ralph
+        self.lang = (lang or 'eng').lower()
+        if ralph is not None:
             self.ralph = ralph
-        self.ralph = {
-            idx: char for idx, char in enumerate(
-                'abcdefghijklmnopqrstuvwxyz'
-                'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-                '0123456789'
-                '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
-                'àáảãạăằắẳẵặâầấẩẫậ'
-                'èéẻẽẹêềếểễệ'
-                'ìíỉĩị'
-                'òóỏõọôồốổỗộơờớởỡợ'
-                'ùúủũụưừứửữự'
-                'ỳýỷỹỵ'
-                'đ'
-                'ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ'
-                'ÈÉẺẼẸÊỀẾỂỄỆ'
-                'ÌÍỈĨỊ'
-                'ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ'
-                'ÙÚỦŨỤƯỪỨỬỮỰ'
-                'ỲÝỶỸỴ'
-                'Đ'
-            )
-        }
+        else:
+            if self.lang == 'vie':
+                # Predefined Vietnamese-inclusive alphabet (same set as other models)
+                self.ralph = {
+                    idx: char for idx, char in enumerate(
+                        'abcdefghijklmnopqrstuvwxyz'
+                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                        '0123456789'
+                        '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
+                        'àáảãạăằắẳẵặâầấẩẫậ'
+                        'èéẻẽẹêềếểễệ'
+                        'ìíỉĩị'
+                        'òóỏõọôồốổỗộơờớởỡợ'
+                        'ùúủũụưừứửữự'
+                        'ỳýỷỹỵ'
+                        'đ'
+                        'ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ'
+                        'ÈÉẺẼẸÊỀẾỂỄỆ'
+                        'ÌÍỈĨỊ'
+                        'ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ'
+                        'ÙÚỦŨỤƯỪỨỬỮỰ'
+                        'ỲÝỶỸỴ'
+                        'Đ'
+                    )
+                }
+            else:
+                alph = get_alphabet(self.tlbls)
+                self.ralph = dict(zip(alph.values(), alph.keys()))
+                self.alph = alph
         if mln != None:
             filt = [len(x) <= mln if fmin else len(x)
                     >= mln for x in self.tlbls]
@@ -95,8 +99,33 @@ class myLoadDS(Dataset):
         return (timgs, self.tlbls[index])
 
 
+def _read_text(path):
+    """Read a text file with robust encoding handling.
+    Try UTF-8 first, then fall back to common Windows encodings.
+    """
+    encodings = ['utf-8', 'utf-8-sig', 'cp1258', 'cp1252', 'latin-1']
+    last_err = None
+    for enc in encodings:
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError as e:
+            last_err = e
+            continue
+        except FileNotFoundError:
+            raise
+    # As a last resort, ignore errors to avoid crashing the training loop
+    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        return f.read()
+
+
+def _read_lines(path):
+    txt = _read_text(path)
+    return txt.splitlines()
+
+
 def get_files(nfile, dpath):
-    fnames = open(nfile, 'r').readlines()
+    fnames = _read_lines(nfile)
     fnames = [dpath + x.strip() for x in fnames]
     return fnames
 
@@ -139,9 +168,8 @@ def get_labels(fnames):
     labels = []
     for id, image_file in enumerate(fnames):
         fn = os.path.splitext(image_file)[0] + '.txt'
-        lbl = open(fn, 'r').read()
+        lbl = _read_text(fn)
         lbl = ' '.join(lbl.split())  # remove linebreaks if present
-
         labels.append(lbl)
 
     return labels

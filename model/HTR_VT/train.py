@@ -74,7 +74,7 @@ def main():
         model, model_ema, None, resume_path, logger)
 
     logger.info('Loading train loader...')
-    train_dataset = dataset.myLoadDS(args.train_data_list, args.data_path, args.img_size)
+    train_dataset = dataset.myLoadDS(args.train_data_list, args.data_path, args.img_size, lang=getattr(args, 'lang', 'eng'))
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=args.train_bs,
                                                shuffle=True,
@@ -84,7 +84,7 @@ def main():
     train_iter = dataset.cycle_data(train_loader)
 
     logger.info('Loading val loader...')
-    val_dataset = dataset.myLoadDS(args.val_data_list, args.data_path, args.img_size, ralph=train_dataset.ralph)
+    val_dataset = dataset.myLoadDS(args.val_data_list, args.data_path, args.img_size, ralph=train_dataset.ralph, lang=getattr(args, 'lang', 'eng'))
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                              batch_size=args.val_bs,
                                              shuffle=False,

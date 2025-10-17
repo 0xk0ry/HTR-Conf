@@ -109,4 +109,7 @@ def get_args_parser():
     parser.add_argument('--test-data-list', type=str, default='./data/iam/test.ln',
                      help='test data list')
     parser.add_argument('--nb-cls', default=80, type=int, help='nb of classes, IAM=79+1, READ2016=89+1')
+    # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph)
+    parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie'],
+                        help='Language setting: eng uses dynamic alphabet, vie uses predefined Vietnamese ralph')
     return parser.parse_args()
