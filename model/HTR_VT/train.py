@@ -145,31 +145,31 @@ def main():
             train_loss = 0.0
             train_loss_count = 0
 
-        if nb_iter % (args.eval_iter*10) == 0:
+        if nb_iter % args.eval_iter == 0:
             model.eval()
             with torch.no_grad():
                 val_loss, val_cer, val_wer, preds, labels = valid.validation(model_ema.ema,
                                                                              criterion,
                                                                              val_loader,
                                                                              converter)
-                # Save checkpoint every print interval (like model_v4-2)
-                ckpt_name = f"checkpoint_{best_cer:.4f}_{best_wer:.4f}_{nb_iter}.pth"
-                checkpoint = {
-                    'model': model.state_dict(),
-                    'state_dict_ema': model_ema.ema.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'nb_iter': nb_iter,
-                    'best_cer': best_cer,
-                    'best_wer': best_wer,
-                    'args': vars(args),
-                    'random_state': random.getstate(),
-                    'numpy_state': np.random.get_state(),
-                    'torch_state': torch.get_rng_state(),
-                    'torch_cuda_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
-                    'train_loss': train_loss,
-                    'train_loss_count': train_loss_count,
-                }
-                torch.save(checkpoint, os.path.join(args.save_dir, ckpt_name))
+                if nb_iter % (args.eval_iter*10) == 0:
+                    ckpt_name = f"checkpoint_{best_cer:.4f}_{best_wer:.4f}_{nb_iter}.pth"
+                    checkpoint = {
+                        'model': model.state_dict(),
+                        'state_dict_ema': model_ema.ema.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'nb_iter': nb_iter,
+                        'best_cer': best_cer,
+                        'best_wer': best_wer,
+                        'args': vars(args),
+                        'random_state': random.getstate(),
+                        'numpy_state': np.random.get_state(),
+                        'torch_state': torch.get_rng_state(),
+                        'torch_cuda_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                        'train_loss': train_loss,
+                        'train_loss_count': train_loss_count,
+                    }
+                    torch.save(checkpoint, os.path.join(args.save_dir, ckpt_name))
                 if val_cer < best_cer:
                     logger.info(f'CER improved from {best_cer:.4f} to {val_cer:.4f}!!!')
                     best_cer = val_cer
