@@ -145,7 +145,7 @@ def main():
             train_loss = 0.0
             train_loss_count = 0
 
-        if nb_iter % args.eval_iter == 0:
+        if nb_iter % (args.eval_iter*10) == 0:
             model.eval()
             with torch.no_grad():
                 val_loss, val_cer, val_wer, preds, labels = valid.validation(model_ema.ema,
