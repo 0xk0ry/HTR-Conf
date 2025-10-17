@@ -455,10 +455,14 @@ class MaskedAutoencoderViT(nn.Module):
 
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
 
-        # split depths (example: 2 full-rate → detour → remaining full-rate)
-        n_a = max(1, depth // 3) # 2 blocks 
-        # leave room for 1 low-rate block
-        n_c = max(1, depth - n_a - 1) # 3 blocks
+        # Depth layout policy (requested):
+        # Given input depth = n
+        #  - blocks_a: n - 1 blocks
+        #  - low_detour: placed after blocks_a (conceptually depth n)
+        #  - blocks_c: exactly 1 block
+        # Total transformer blocks remain = n_a + n_c = depth.
+        n_a = max(0, depth - 1)
+        n_c = 1
         self.blocks_a = nn.ModuleList([
             ConformerBlock(embed_dim, num_heads, self.num_patches,
                            mlp_ratio=mlp_ratio, ff_dropout=dropout, attn_dropout=dropout,
@@ -475,11 +479,12 @@ class MaskedAutoencoderViT(nn.Module):
             gate_channelwise=False
         )
 
+        # Single tail block; assign the last droppath value (aligned with depth)
         self.blocks_c = nn.ModuleList([
             ConformerBlock(embed_dim, num_heads, self.num_patches,
                            mlp_ratio=mlp_ratio, ff_dropout=dropout, attn_dropout=dropout,
                            conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
-                           norm_layer=norm_layer, drop_path=dpr[n_a + 1 + i])
+                           norm_layer=norm_layer, drop_path=dpr[n_a + i])
             for i in range(n_c)
         ])
         self.norm = norm_layer(embed_dim, elementwise_affine=True)
