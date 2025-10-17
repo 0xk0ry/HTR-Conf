@@ -222,6 +222,123 @@ class Upsample1D(nn.Module):
         x = x.transpose(1, 2)
         return x
 
+    def __init__(self, dim, num_heads, num_patches, blocks_at_64=1,
+                 conv_kernel_size=3, mlp_ratio=4.0, dropout=0.1, drop_path=0.0,
+                 use_squeeze_block=True, gate_channelwise=False):
+        super().__init__()
+        self.ds = DSConv1D(dim, k=7)
+        self.us = Upsample1DLinearRefine(dim)
+        Block64 = SqueezeConformerBlock if use_squeeze_block else ConformerBlock
+        # NOTE: num_patches//2 is fine; your Attention doesn’t hard-use it, but it’s consistent.
+        self.blocks64 = nn.ModuleList([
+            Block64(dim, num_heads, num_patches // 2,
+                    mlp_ratio=mlp_ratio,
+                    ff_dropout=dropout, attn_dropout=dropout, conv_dropout=dropout,
+                    conv_kernel_size=conv_kernel_size + 4,   # slightly larger RF at low rate
+                    drop_path=drop_path)
+            for _ in range(blocks_at_64)
+        ])
+        self.fuse = BypassGate(
+            dim, channelwise=gate_channelwise, init_alpha=0.0)
+
+    def forward(self, x):  # x: [B, 128, C]
+        B, N, C = x.shape
+        skip = x
+        z = self.ds(x)                     # [B, 64, C]
+        for blk in self.blocks64:
+            z = blk(z)                     # light processing at 64
+        z = self.us(z, target_len=N)       # [B, 128, C]
+        return self.fuse(skip, z)          # gated mix at 128
+
+# NEW
+
+
+class DSConv1D(nn.Module):
+    """Anti-alias downsample by 2 along width tokens: depthwise k=7, stride=2 + PW refine."""
+
+    def __init__(self, dim, k=7):
+        super().__init__()
+        pad = k // 2
+        self.dw = nn.Conv1d(dim, dim, kernel_size=k, stride=2,
+                            padding=pad, groups=dim, bias=False)
+        self.pw = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
+        self.norm = nn.GroupNorm(1, dim)
+        self.act = nn.SiLU()
+
+    def forward(self, x):          # x: [B, N, C]
+        x = x.transpose(1, 2)      # [B, C, N]
+        x = self.pw(self.act(self.norm(self.dw(x))))
+        return x.transpose(1, 2)   # [B, N/2, C]
+
+# NEW
+
+
+class Upsample1DLinearRefine(nn.Module):
+    """Linear interpolation + 1x1 refine (cleaner than nearest)."""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.refine = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
+        self.norm = nn.GroupNorm(1, dim)
+        self.act = nn.SiLU()
+
+    def forward(self, x, target_len: int):   # x: [B, N, C]
+        x = x.transpose(1, 2)                # [B, C, N]
+        x = F.interpolate(x, size=target_len, mode="linear",
+                          align_corners=False)
+        x = self.refine(self.act(self.norm(x)))
+        return x.transpose(1, 2)             # [B, target_len, C]
+
+# NEW
+
+
+class BypassGate(nn.Module):
+    """Learnable fuse: y = (1-α)*skip + α*detour; per-channel optional."""
+
+    def __init__(self, dim, channelwise=False, init_alpha=0.0):
+        super().__init__()
+        if channelwise:
+            self.alpha = nn.Parameter(torch.full((1, 1, dim), init_alpha))
+        else:
+            self.alpha = nn.Parameter(torch.tensor(init_alpha))
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, skip, detour):
+        a = self.sigmoid(self.alpha)
+        return (1 - a) * skip + a * detour
+
+# NEW
+
+
+class LowRateDetour(nn.Module):
+    def __init__(self, dim, num_heads, num_patches, blocks_at_64=1,
+                 conv_kernel_size=3, mlp_ratio=4.0, dropout=0.1, drop_path=0.0,
+                 use_squeeze_block=True, gate_channelwise=False):
+        super().__init__()
+        self.ds = DSConv1D(dim, k=7)
+        self.us = Upsample1DLinearRefine(dim)
+        Block64 = SqueezeConformerBlock if use_squeeze_block else ConformerBlock
+        # NOTE: num_patches//2 is fine; your Attention doesn’t hard-use it, but it’s consistent.
+        self.blocks64 = nn.ModuleList([
+            Block64(dim, num_heads, num_patches // 2,
+                    mlp_ratio=mlp_ratio,
+                    ff_dropout=dropout, attn_dropout=dropout, conv_dropout=dropout,
+                    conv_kernel_size=conv_kernel_size + 4,   # slightly larger RF at low rate
+                    drop_path=drop_path)
+            for _ in range(blocks_at_64)
+        ])
+        self.fuse = BypassGate(
+            dim, channelwise=gate_channelwise, init_alpha=0.0)
+
+    def forward(self, x):  # x: [B, 128, C]
+        B, N, C = x.shape
+        skip = x
+        z = self.ds(x)                     # [B, 64, C]
+        for blk in self.blocks64:
+            z = blk(z)                     # light processing at 64
+        z = self.us(z, target_len=N)       # [B, 128, C]
+        return self.fuse(skip, z)          # gated mix at 128
+
 
 class SqueezeConformerBlock(nn.Module):
     """Conformer-style block with SE gating (SqueezeFormer-style enhancement).
@@ -264,10 +381,14 @@ class SqueezeConformerBlock(nn.Module):
 
         self.final_norm = norm_layer(dim, elementwise_affine=True)
 
-        self.drop_path_ffn1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.drop_path_attn = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.drop_path_conv = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.drop_path_ffn2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path_ffn1 = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path_attn = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path_conv = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path_ffn2 = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 1) 1/2 FFN
@@ -584,13 +705,33 @@ class MaskedAutoencoderViT(nn.Module):
             )
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
-            self.blocks = nn.ModuleList([
+
+            # split depths (example: 2 full-rate → detour → remaining full-rate)
+            n_a = max(1, depth // 3)
+            # leave room for 1 low-rate block
+            n_c = max(1, depth - n_a - 1)
+            self.blocks_a = nn.ModuleList([
                 ConformerBlock(embed_dim, num_heads, self.num_patches,
-                               mlp_ratio=mlp_ratio,
-                               ff_dropout=dropout, attn_dropout=dropout,
+                               mlp_ratio=mlp_ratio, ff_dropout=dropout, attn_dropout=dropout,
                                conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
                                norm_layer=norm_layer, drop_path=dpr[i])
-                for i in range(depth)
+                for i in range(n_a)
+            ])
+
+            self.low_detour = LowRateDetour(
+                dim=embed_dim, num_heads=num_heads, num_patches=self.num_patches,
+                blocks_at_64=1,                           # start with 1; try 2 only if needed
+                conv_kernel_size=conv_kernel_size,
+                mlp_ratio=mlp_ratio, dropout=dropout, drop_path=0.0,
+                use_squeeze_block=True, gate_channelwise=False
+            )
+
+            self.blocks_c = nn.ModuleList([
+                ConformerBlock(embed_dim, num_heads, self.num_patches,
+                               mlp_ratio=mlp_ratio, ff_dropout=dropout, attn_dropout=dropout,
+                               conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
+                               norm_layer=norm_layer, drop_path=dpr[n_a + 1 + i])
+                for i in range(n_c)
             ])
         self.norm = norm_layer(embed_dim, elementwise_affine=True)
         self.head = torch.nn.Linear(embed_dim, nb_cls)
@@ -629,7 +770,8 @@ class MaskedAutoencoderViT(nn.Module):
         to_delete = []
 
         # 0) Strip an optional leading 'module.' from DataParallel checkpoints
-        has_module_prefix = all(k.startswith("module.") for k in state_dict.keys())
+        has_module_prefix = all(k.startswith("module.")
+                                for k in state_dict.keys())
         if has_module_prefix:
             for k, v in list(state_dict.items()):
                 new_k = k[len("module."):]
@@ -861,8 +1003,12 @@ class MaskedAutoencoderViT(nn.Module):
         if getattr(self, "architecture", "conformer") == "squeezeformer":
             x = self.encoder(x)
         else:
-            for blk in self.blocks:
+            for blk in self.blocks_a:
                 x = blk(x)
+            x = self.low_detour(x)         # <<< inject detour at mid-depth
+            for blk in self.blocks_c:
+                x = blk(x)
+
         return self.norm(x)                           # [B,N,D]
 
     def forward(self, x, use_masking=False, return_features=False, mask_mode="mms", mask_ratio=None, max_span_length=None):
