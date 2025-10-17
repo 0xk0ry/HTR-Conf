@@ -461,7 +461,7 @@ class MaskedAutoencoderViT(nn.Module):
 
     # ---- MMS helpers ----
     # ---------------------------
-    # 1-D Multiple Masking (MMS)
+    # 1-D Multiple Masking
     # ---------------------------
 
     def _mask_random_1d(self, B: int, L: int, ratio: float, device) -> torch.Tensor:
@@ -576,33 +576,6 @@ class MaskedAutoencoderViT(nn.Module):
 
         return mask
 
-    def generate_mms_mask(self, x: torch.Tensor,
-                          ratios: dict = None,
-                          max_span_length: int = 8,
-                          block_params: dict = None) -> torch.Tensor:
-        """
-        Build UNION of three 1-D masks: random, blockwise, span.
-        x: [B, L, D] tokens.
-        Returns: mask_keep float [B, L, 1], where 1=keep, 0=mask.
-        """
-        B, L, _ = x.shape
-        if ratios is None:
-            ratios = getattr(self, "mms_ratios", {
-                             "random": 0.50, "block": 0.25, "span": 0.25})
-        block_params = block_params or {}
-        min_block = int(block_params.get("min_block", 2))
-
-        m_rand = self._mask_random_1d(B, L, ratios.get(
-            "random", 0.50), x.device)              # [B,L] True=masked
-        m_block = self._mask_block_1d(B, L, ratios.get(
-            "block", 0.25), x.device, min_block)     # [B,L]
-        m_span = self._mask_span_1d(B, L, ratios.get(
-            "span", 0.25), max_span_length, x.device)  # [B,L]
-
-        m_union = (m_rand | m_block | m_span)   # True = masked by any strategy
-        mask_keep = (~m_union).float().unsqueeze(-1)  # [B,L,1], 1=keep, 0=mask
-        return mask_keep
-
     def generate_span_mask(self, x, mask_ratio, max_span_length):
         N, L, D = x.shape  # batch, length, dim
         mask = torch.ones(N, L, 1).to(x.device)
@@ -615,7 +588,7 @@ class MaskedAutoencoderViT(nn.Module):
 
     # inside MaskedAutoencoderViT.forward_features(...)
     def forward_features(self, x, use_masking=False,
-                         mask_mode="mms",   # "random" | "block" | "span_old" | "mms"
+                         mask_mode="span_old",   # "random" | "block" | "span_old"
                          mask_ratio=0.5, max_span_length=8,
                          ratios=None, block_params=None):
         # [B,C,W,H] -> your [B,N,D] after reshape
@@ -632,13 +605,9 @@ class MaskedAutoencoderViT(nn.Module):
             elif mask_mode == "block":
                 keep = (~self._mask_block_1d(B, x.size(1),
                         mask_ratio, x.device)).float().unsqueeze(-1)
-            elif mask_mode == "span_old":
+            else:
                 keep = (~self._mask_span_old_1d(B, x.size(1), mask_ratio,
                         max_span_length, x.device)).float().unsqueeze(-1)
-            else:  # "mms" union (what you already have)
-                keep = self.generate_mms_mask(
-                    x, ratios=ratios, max_span_length=max_span_length, block_params=block_params)
-            x = x * keep + (1 - keep) * self.mask_token  # [B,N,D]
 
         # pos + transformer as you already do
         x = x + self.pos_embed[:, :x.size(1), :]
@@ -646,7 +615,7 @@ class MaskedAutoencoderViT(nn.Module):
             x = blk(x)
         return self.norm(x)                           # [B,N,D]
 
-    def forward(self, x, use_masking=False, return_features=False, mask_mode="mms", mask_ratio=None, max_span_length=None):
+    def forward(self, x, use_masking=False, return_features=False, mask_mode="span_old", mask_ratio=None, max_span_length=None):
         feats = self.forward_features(
             # [B, N, D]
             x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio, max_span_length=max_span_length)
@@ -662,7 +631,7 @@ def create_model(nb_cls, img_size, mlp_ratio=4, **kwargs):
     model = MaskedAutoencoderViT(
         nb_cls,
         img_size=img_size,
-        patch_size=(2, 64),
+        patch_size=(4, 64),
         embed_dim=512,
         depth=6,
         num_heads=8,
