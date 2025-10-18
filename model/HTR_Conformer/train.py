@@ -229,44 +229,73 @@ def main():
     train_loss_count = train_loss_count
     #### ---- train & eval ---- ####
     logger.info('Start training...')
+    accum_steps = max(1, int(getattr(args, 'accum_steps', 1)))
+    micro_step = 0
+    # stats across macro iters
+    avg_loss_ctc = 0.0
+    avg_loss_sgm = 0.0
+
     for nb_iter in range(start_iter, args.total_iter):
 
         optimizer, current_lr = utils.update_lr_cos(
             nb_iter, args.warm_up_iter, args.total_iter, args.max_lr, optimizer)
 
+        # Accumulate gradients over accum_steps micro-batches, then perform one SAM step
         optimizer.zero_grad()
-        batch = next(train_iter)
-        image = batch[0].cuda(non_blocking=True)
-        text, length = converter.encode(batch[1])
-        batch_size = image.size(0)
+        total_loss_this_macro = 0.0
+        avg_loss_ctc = 0.0
+        avg_loss_sgm = 0.0
+        cached_batches = []
+        for micro_step in range(accum_steps):
+            batch = next(train_iter)
+            cached_batches.append(batch)  # cache CPU tensors and labels for SAM second pass
+            image = batch[0].cuda(non_blocking=True)
+            text, length = converter.encode(batch[1])
+            batch_size = image.size(0)
 
-        loss, loss_ctc, loss_sgm = tri_masked_loss(
-            args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-            nb_iter, ctc_lambda, sgm_lambda, stoi,
-            r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-        )
-        loss.backward()
+            loss, loss_ctc, loss_sgm = tri_masked_loss(
+                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+            )
+            # scale loss to average over accum steps
+            (loss / accum_steps).backward()
+            total_loss_this_macro += loss.item()
+            avg_loss_ctc += loss_ctc.mean().item()
+            avg_loss_sgm += loss_sgm.mean().item()
+
+        # SAM first step after accumulating all gradients
         optimizer.first_step(zero_grad=True)
 
-        # ---- SECOND SAM PASS: recompute tri-CTC loss at the perturbed weights ----
-        loss2, _, _ = tri_masked_loss(
-            args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-            nb_iter, ctc_lambda, sgm_lambda, stoi,
-            r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-        )
-        loss2.backward()
+        # Recompute with perturbed weights and accumulate again for the second step
+        for micro_step in range(accum_steps):
+            batch = cached_batches[micro_step]
+            image = batch[0].cuda(non_blocking=True)
+            text, length = converter.encode(batch[1])
+            batch_size = image.size(0)
+
+            loss2, _, _ = tri_masked_loss(
+                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+            )
+            (loss2 / accum_steps).backward()
+
         optimizer.second_step(zero_grad=True)
 
         model.zero_grad()
+        # Update EMA once per macro-iteration (after one optimizer step)
         model_ema.update(model, num_updates=nb_iter / 2)
-        train_loss += loss.item()
+
+        # Aggregate stats for logging (use averages across accum_steps)
+        train_loss += total_loss_this_macro / accum_steps
         train_loss_count += 1
 
         if nb_iter % args.print_iter == 0:
             train_loss_avg = train_loss / train_loss_count if train_loss_count > 0 else 0.0
 
             logger.info(
-                f'Iter : {nb_iter} \t LR : {current_lr:0.5f} \t total : {train_loss_avg:0.5f} \t CTC : {loss_ctc.mean():0.5f} \t SGM : {loss_sgm.mean():0.5f} \t ')
+                f'Iter : {nb_iter} \t LR : {current_lr:0.5f} \t total : {train_loss_avg:0.5f} \t CTC : {(avg_loss_ctc/accum_steps):0.5f} \t SGM : {(avg_loss_sgm/accum_steps):0.5f} \t ')
 
             writer.add_scalar('./Train/lr', current_lr, nb_iter)
             writer.add_scalar('./Train/train_loss', train_loss_avg, nb_iter)
@@ -274,8 +303,8 @@ def main():
                 wandb.log({
                     'train/lr': current_lr,
                     'train/loss': train_loss_avg,
-                    'train/CTC': loss_ctc.mean(),
-                    'train/SGM': loss_sgm.mean(),
+                    'train/CTC': (avg_loss_ctc/accum_steps),
+                    'train/SGM': (avg_loss_sgm/accum_steps),
                     'iter': nb_iter,
                 }, step=nb_iter)
             train_loss = 0.0
