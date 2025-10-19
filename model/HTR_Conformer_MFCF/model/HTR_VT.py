@@ -119,6 +119,7 @@ class ConvModule(nn.Module):
     pw -> (GLU) -> dw -> GN -> SiLU -> pw   (no mandatory pre-LN)
     input: (B, N, C) ; internal convs on (B, C, N)
     """
+
     def __init__(self, dim, kernel_size=3, dropout=0.1, drop_path=0.0,
                  expansion=1.0, pre_norm=False):
         super().__init__()
@@ -135,7 +136,8 @@ class ConvModule(nn.Module):
         self.act = nn.SiLU()
         self.pw2 = nn.Conv1d(ch, dim, kernel_size=1)
         self.dropout = nn.Dropout(dropout)
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
         # residual outside in the block; this returns only the branch output
@@ -153,6 +155,63 @@ class ConvModule(nn.Module):
         return self.drop_path(x)
 
 
+class Downsample1D(nn.Module):
+    """
+    Depthwise 1D stride-2 low-pass on the sequence length (N).
+    Input:  [B, N, D]  ->  Output: [B, N/2, D]
+    """
+
+    def __init__(self, dim, kernel_size=3, stride=2, lowpass_init=True):
+        super().__init__()
+        self.dw = nn.Conv1d(dim, dim, kernel_size=kernel_size,
+                            stride=stride, padding=kernel_size//2,
+                            groups=dim, bias=False)
+        self.pw = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
+        if lowpass_init:
+            with torch.no_grad():
+                w = torch.zeros_like(self.dw.weight)
+                w[:, 0, :] = 1.0 / kernel_size  # simple box filter per channel
+                self.dw.weight.copy_(w)
+
+    def forward(self, x):                      # x: [B, N, D]
+        x = x.transpose(1, 2)                  # [B, D, N]
+        x = self.pw(self.dw(x))                # [B, D, N/2]
+        return x.transpose(1, 2)               # [B, N/2, D]
+
+
+class Upsample1D(nn.Module):
+    """
+    Nearest upsample + 1x1 mix to smooth.
+    Input:  [B, N_low, D]  ->  Output: [B, N_high, D]
+    """
+
+    def __init__(self, dim):
+        super().__init__()
+        self.proj = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
+
+    def forward(self, x, target_len: int):
+        x = x.transpose(1, 2)                            # [B, D, N_low]
+        x = F.interpolate(x, size=target_len, mode='nearest')
+        x = self.proj(x)
+        return x.transpose(1, 2)                         # [B, N_high, D]
+
+
+class GatedSkipFuse(nn.Module):
+    """
+    y = σ(g) * x_new + (1 - σ(g)) * x_skip    (per-channel gate)
+    """
+
+    def __init__(self, dim, init_alpha=0.95):
+        super().__init__()
+        # initialize near "straight-through" (mostly trust x_new)
+        self.g = nn.Parameter(torch.full(
+            (1, 1, dim), float(np.log(init_alpha/(1-init_alpha)))))
+
+    def forward(self, x_new, x_skip):
+        a = torch.sigmoid(self.g)                        # [1,1,D]
+        return a * x_new + (1.0 - a) * x_skip
+
+
 # ---- Squeezeformer-style encoder block (Post-LN everywhere)
 class SqueezeformerBlock(nn.Module):
     """
@@ -163,6 +222,7 @@ class SqueezeformerBlock(nn.Module):
       4) 1/2 FFN    -> PostLN
     No extra final norm.
     """
+
     def __init__(self,
                  dim,
                  num_heads,
@@ -195,10 +255,14 @@ class SqueezeformerBlock(nn.Module):
         self.postln_ffn2 = norm_layer(dim, elementwise_affine=True)
 
         # stochastic depth on the residual branches
-        self.dp_attn = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_conv  = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_attn = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn1 = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_conv = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn2 = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
         # 1) MHA (residual -> PostLN)
@@ -213,6 +277,7 @@ class SqueezeformerBlock(nn.Module):
         # 4) 1/2 FFN (residual -> PostLN)
         x = self.postln_ffn2(x + 0.5 * self.dp_ffn2(self.ffn2(x)))
         return x
+
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size):
     """
@@ -284,7 +349,11 @@ class MaskedAutoencoderViT(nn.Module):
         norm_layer=nn.LayerNorm,
         conv_kernel_size: int = 3,
         dropout: float = 0.1,
-        drop_path: float = 0.1
+        drop_path: float = 0.1,
+        temporal_unet: bool = True,
+        down_after: int = 2,    # downsample after this many blocks
+        up_after: int = 4,    # upsample after this many blocks
+        ds_kernel: int = 3
     ):
         super().__init__()
 
@@ -302,14 +371,21 @@ class MaskedAutoencoderViT(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
             SqueezeformerBlock(embed_dim, num_heads, self.num_patches,
-                           mlp_ratio=mlp_ratio,
-                           ff_dropout=dropout, attn_dropout=dropout,
-                           conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
-                           norm_layer=norm_layer, drop_path=dpr[i])  # NEW
+                               mlp_ratio=mlp_ratio,
+                               ff_dropout=dropout, attn_dropout=dropout,
+                               conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
+                               norm_layer=norm_layer, drop_path=dpr[i])  # NEW
             for i in range(depth)
         ])
         self.norm = norm_layer(embed_dim, elementwise_affine=True)
         self.head = torch.nn.Linear(embed_dim, nb_cls)
+        self.temporal_unet = temporal_unet
+        self.down_after = down_after
+        self.up_after = up_after
+        if self.temporal_unet:
+            self.down1 = Downsample1D(embed_dim, kernel_size=ds_kernel)
+            self.up1 = Upsample1D(embed_dim)
+            self.fuse1 = GatedSkipFuse(embed_dim, init_alpha=0.95)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -345,7 +421,8 @@ class MaskedAutoencoderViT(nn.Module):
         to_delete = []
 
         # 0) Strip an optional leading 'module.' from DataParallel checkpoints
-        has_module_prefix = all(k.startswith("module.") for k in state_dict.keys())
+        has_module_prefix = all(k.startswith("module.")
+                                for k in state_dict.keys())
         if has_module_prefix:
             for k, v in list(state_dict.items()):
                 new_k = k[len("module."):]
@@ -541,11 +618,30 @@ class MaskedAutoencoderViT(nn.Module):
                 keep = (~self._mask_span_old_1d(B, x.size(1), mask_ratio,
                         max_span_length, x.device)).float().unsqueeze(-1)
 
-        # pos + transformer as you already do
+        # add once at high-res
         x = x + self.pos_embed[:, :x.size(1), :]
-        for blk in self.blocks:
+
+        skip_hi = None
+        for i, blk in enumerate(self.blocks, 1):
             x = blk(x)
-        return self.norm(x)                           # [B,N,D]
+
+            # ---- Downsample after 'down_after' blocks
+            if self.temporal_unet and i == self.down_after:
+                skip_hi = x                                # keep high-res skip
+                # pad one token if odd length to keep /2 exact
+                if (x.size(1) % 2) == 1:
+                    x = torch.cat([x, x[:, -1:, :]], dim=1)
+                x = self.down1(x)                          # [B, N/2, D]
+
+            # ---- Upsample & fuse after 'up_after' blocks
+            if self.temporal_unet and i == self.up_after:
+                assert skip_hi is not None, "Upsample requires a stored skip."
+                # back to high-res
+                x = self.up1(x, target_len=skip_hi.size(1))
+                # gated skip fusion
+                x = self.fuse1(x, skip_hi)
+
+        return self.norm(x)
 
     def forward(self, x, use_masking=False, return_features=False, mask_mode="span_old", mask_ratio=None, max_span_length=None):
         feats = self.forward_features(
@@ -570,6 +666,10 @@ def create_model(nb_cls, img_size, mlp_ratio=4, **kwargs):
         mlp_ratio=mlp_ratio,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         conv_kernel_size=7,
+        temporal_unet=True,      # enable #1
+        down_after=2,            # blocks 1-2 high-res
+        up_after=4,              # blocks 3-4 low-res
+        ds_kernel=3,
         **kwargs,
     )
     return model
