@@ -211,35 +211,28 @@ class Downsample1D(nn.Module):
 
 class Upsample1D(nn.Module):
     """
-    Nearest upsample + 1x1 mix to smooth.
+    Lightweight upsampler: nearest/linear + 1x1 mix to smooth.
     Input:  [B, N_low, D]  ->  Output: [B, N_high, D]
     """
 
-    def __init__(self, dim):
+    def __init__(self, dim, mode: str = 'nearest'):
         super().__init__()
+        assert mode in ('nearest', 'linear'), "Upsample1D mode must be 'nearest' or 'linear'"
+        self.mode = mode
         self.proj = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
 
     def forward(self, x, target_len: int):
         x = x.transpose(1, 2)                            # [B, D, N_low]
-        x = F.interpolate(x, size=target_len, mode='nearest')
+        if self.mode == 'nearest':
+            x = F.interpolate(x, size=target_len, mode='nearest')
+        else:
+            # 1D linear interpolation
+            x = F.interpolate(x, size=target_len, mode='linear', align_corners=False)
         x = self.proj(x)
         return x.transpose(1, 2)                         # [B, N_high, D]
 
 
-class GatedSkipFuse(nn.Module):
-    """
-    y = σ(g) * x_new + (1 - σ(g)) * x_skip    (per-channel gate)
-    """
-
-    def __init__(self, dim, init_alpha=0.95):
-        super().__init__()
-        # initialize near "straight-through" (mostly trust x_new)
-        self.g = nn.Parameter(torch.full(
-            (1, 1, dim), float(np.log(init_alpha/(1-init_alpha)))))
-
-    def forward(self, x_new, x_skip):
-        a = torch.sigmoid(self.g)                        # [1,1,D]
-        return a * x_new + (1.0 - a) * x_skip
+# Removed gated fusion. We fuse by simple addition (x + skip).
 
 
 # ---- Squeezeformer-style encoder block (Post-LN everywhere)
@@ -385,6 +378,8 @@ class MaskedAutoencoderViT(nn.Module):
         up_after: int = 4,    # upsample after this many blocks
         ds_kernel: int = 3,
         max_seq_len: int = 1024,
+        # upsampler config
+        upsample_mode: str = 'nearest',   # 'nearest' or 'linear'
     ):
         super().__init__()
 
@@ -415,8 +410,7 @@ class MaskedAutoencoderViT(nn.Module):
         self.up_after = up_after
         if self.temporal_unet:
             self.down1 = Downsample1D(embed_dim, kernel_size=ds_kernel)
-            self.up1 = Upsample1D(embed_dim)
-            self.fuse1 = GatedSkipFuse(embed_dim, init_alpha=0.95)
+            self.up1 = Upsample1D(embed_dim, mode=upsample_mode)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -671,8 +665,8 @@ class MaskedAutoencoderViT(nn.Module):
                 assert skip_hi is not None, "Upsample requires a stored skip."
                 # back to high-res
                 x = self.up1(x, target_len=skip_hi.size(1))
-                # gated skip fusion
-                x = self.fuse1(x, skip_hi)
+                # fuse by simple addition
+                x = x + skip_hi
 
         return self.norm(x)
 
@@ -704,6 +698,7 @@ def create_model(nb_cls, img_size, mlp_ratio=4, **kwargs):
         up_after=4,              # blocks 3-4 low-res
         ds_kernel=3,
         max_seq_len=128,
+        upsample_mode='nearest',
         **kwargs,
     )
     return model
