@@ -146,43 +146,41 @@ class FeedForward(nn.Module):
 
 class ConvModule(nn.Module):
     """
-    pw -> (GLU) -> dw -> GN -> SiLU -> pw   (no mandatory pre-LN)
-    input: (B, N, C) ; internal convs on (B, C, N)
+    Unified-activation conv block (Swish everywhere), no GLU.
+    pw (D -> eD) -> Swish -> dw(k) -> GN -> Swish -> pw (eD -> D)
+    input: (B, N, D) ; internal convs on (B, C, N)
     """
-
     def __init__(self, dim, kernel_size=3, dropout=0.1, drop_path=0.0,
-                 expansion=1.0, pre_norm=False):
+                 expansion=1.0, pre_norm=False, activation=nn.SiLU):
         super().__init__()
         self.pre_norm = nn.LayerNorm(dim) if pre_norm else None
+        hidden = int(round(dim * expansion))
 
-        hidden = int(dim * expansion)
-        self.pw1 = nn.Conv1d(dim, hidden, kernel_size=1)
-        self.glu = nn.GLU(dim=1) if hidden % 2 == 0 else None
-        ch = hidden // 2 if self.glu is not None else hidden
+        self.pw1 = nn.Conv1d(dim, hidden, kernel_size=1, bias=True)
+        self.act1 = activation()
 
-        self.dw = nn.Conv1d(ch, ch, kernel_size=kernel_size,
-                            padding=kernel_size // 2, groups=ch, bias=True)
-        self.gn = nn.GroupNorm(1, ch, eps=1e-5)
-        self.act = nn.SiLU()
-        self.pw2 = nn.Conv1d(ch, dim, kernel_size=1)
+        self.dw = nn.Conv1d(hidden, hidden, kernel_size=kernel_size,
+                            padding=kernel_size // 2, groups=hidden, bias=True)
+        self.gn = nn.GroupNorm(1, hidden, eps=1e-5)
+        self.act2 = activation()
+
+        self.pw2 = nn.Conv1d(hidden, dim, kernel_size=1, bias=True)
         self.dropout = nn.Dropout(dropout)
-        self.drop_path = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
-        # residual outside in the block; this returns only the branch output
         if self.pre_norm is not None:
             x = self.pre_norm(x)
-        x = x.transpose(1, 2)                              # (B, C, N)
-        x = self.pw1(x)                                    # (B, hidden, N)
-        if self.glu is not None:
-            x = self.glu(x)                                # (B, hidden/2, N)
-        x = self.dw(x)
-        x = self.gn(x)
-        x = self.act(x)
-        x = self.pw2(x)                                    # (B, dim, N)
-        x = self.dropout(x).transpose(1, 2)                # (B, N, dim)
-        return self.drop_path(x)
+        z = x.transpose(1, 2)            # (B, D, N)
+        z = self.pw1(z)
+        z = self.act1(z)
+        z = self.dw(z)
+        z = self.gn(z)
+        z = self.act2(z)
+        z = self.pw2(z)
+        z = self.dropout(z).transpose(1, 2)
+        return self.drop_path(z)
+
 
 
 class Downsample1D(nn.Module):
@@ -231,21 +229,7 @@ class Upsample1D(nn.Module):
         x = self.proj(x)
         return x.transpose(1, 2)                         # [B, N_high, D]
 
-
-# Removed gated fusion. We fuse by simple addition (x + skip).
-
-
-# ---- Squeezeformer-style encoder block (Post-LN everywhere)
 class SqueezeformerBlock(nn.Module):
-    """
-    Order (each with residual + Post-LN):
-      1) MHA        -> PostLN
-      2) 1/2 FFN    -> PostLN   (macaron)
-      3) ConvModule -> PostLN
-      4) 1/2 FFN    -> PostLN
-    No extra final norm.
-    """
-
     def __init__(self,
                  dim,
                  num_heads,
@@ -255,21 +239,22 @@ class SqueezeformerBlock(nn.Module):
                  attn_dropout=0.0,
                  conv_dropout=0.0,
                  conv_kernel_size=3,
+                 conv_expansion=1.0,          # NEW
                  norm_layer=nn.LayerNorm,
-                 drop_path=0.0):
+                 drop_path=0.0,
+                 layerscale_init=1e-5):       # NEW
         super().__init__()
 
         ff_hidden = int(dim * mlp_ratio)
 
-        # modules (no pre-norms here)
         self.attn = Attention(dim, num_patches, num_heads=num_heads,
                               qkv_bias=True, attn_drop=attn_dropout, proj_drop=ff_dropout)
 
-        self.ffn1 = FeedForward(dim, ff_hidden, dropout=ff_dropout)
+        self.ffn1 = FeedForward(dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
         self.conv = ConvModule(dim, kernel_size=conv_kernel_size,
-                               dropout=conv_dropout, drop_path=0.0,  # drop on outer branch
-                               expansion=1.0, pre_norm=False)
-        self.ffn2 = FeedForward(dim, ff_hidden, dropout=ff_dropout)
+                               dropout=conv_dropout, drop_path=0.0,
+                               expansion=conv_expansion, pre_norm=False, activation=nn.SiLU)
+        self.ffn2 = FeedForward(dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
 
         # post-LNs
         self.postln_attn = norm_layer(dim, elementwise_affine=True)
@@ -277,28 +262,30 @@ class SqueezeformerBlock(nn.Module):
         self.postln_conv = norm_layer(dim, elementwise_affine=True)
         self.postln_ffn2 = norm_layer(dim, elementwise_affine=True)
 
-        # stochastic depth on the residual branches
-        self.dp_attn = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn1 = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_conv = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn2 = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        # stochastic depth
+        self.dp_attn = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_conv = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+        # LayerScale on each residual branch (tiny init)
+        self.ls_attn = LayerScale(dim, init_values=layerscale_init)
+        self.ls_ffn1 = LayerScale(dim, init_values=layerscale_init)
+        self.ls_conv = LayerScale(dim, init_values=layerscale_init)
+        self.ls_ffn2 = LayerScale(dim, init_values=layerscale_init)
 
     def forward(self, x):
         # 1) MHA (residual -> PostLN)
-        x = self.postln_attn(x + self.dp_attn(self.attn(x)))
+        x = self.postln_attn(x + self.ls_attn(self.dp_attn(self.attn(x))))
 
         # 2) 1/2 FFN (macaron) (residual -> PostLN)
-        x = self.postln_ffn1(x + 0.5 * self.dp_ffn1(self.ffn1(x)))
+        x = self.postln_ffn1(x + self.ls_ffn1(0.5 * self.dp_ffn1(self.ffn1(x))))
 
-        # 3) Conv (branch returns only conv output) (residual -> PostLN)
-        x = self.postln_conv(x + self.dp_conv(self.conv(x)))
+        # 3) Conv (residual -> PostLN)
+        x = self.postln_conv(x + self.ls_conv(self.dp_conv(self.conv(x))))
 
         # 4) 1/2 FFN (residual -> PostLN)
-        x = self.postln_ffn2(x + 0.5 * self.dp_ffn2(self.ffn2(x)))
+        x = self.postln_ffn2(x + self.ls_ffn2(0.5 * self.dp_ffn2(self.ffn2(x))))
         return x
 
 
@@ -383,7 +370,6 @@ class MaskedAutoencoderViT(nn.Module):
     ):
         super().__init__()
 
-        self.layer_norm = LayerNorm()
         self.patch_embed = resnet18.ResNet18(embed_dim)
         self.embed_dim = embed_dim
         # Use a configurable max sequence length for relative position window
@@ -397,12 +383,15 @@ class MaskedAutoencoderViT(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
             SqueezeformerBlock(embed_dim, num_heads, self.max_rel_pos,
-                               mlp_ratio=mlp_ratio,
-                               ff_dropout=dropout, attn_dropout=dropout,
-                               conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
-                               norm_layer=norm_layer, drop_path=dpr[i])  # NEW
+                            mlp_ratio=mlp_ratio,
+                            ff_dropout=dropout, attn_dropout=dropout,
+                            conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
+                            conv_expansion=1.0,                 # Swish@1.0 to start
+                            norm_layer=norm_layer, drop_path=dpr[i],
+                            layerscale_init=1e-5)
             for i in range(depth)
         ])
+
         self.norm = norm_layer(embed_dim, elementwise_affine=True)
         self.head = torch.nn.Linear(embed_dim, nb_cls)
         self.temporal_unet = temporal_unet
@@ -675,8 +664,6 @@ class MaskedAutoencoderViT(nn.Module):
             # [B, N, D]
             x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio, max_span_length=max_span_length)
         logits = self.head(feats)               # [B, N, nb_cls]  → CTC
-        # keep your current post-norm if you like
-        logits = self.layer_norm(logits)
         if return_features:
             return logits, feats
         return logits
@@ -688,14 +675,14 @@ def create_model(nb_cls, img_size, mlp_ratio=4, **kwargs):
         img_size=img_size,
         patch_size=(4, 64),
         embed_dim=512,
-        depth=6,
+        depth=8,
         num_heads=8,
         mlp_ratio=mlp_ratio,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         conv_kernel_size=7,
         temporal_unet=True,      # enable #1
-        down_after=2,            # blocks 1-2 high-res
-        up_after=4,              # blocks 3-4 low-res
+        down_after=3,            # blocks 1-2 high-res
+        up_after=7,              # blocks 3-4 low-res
         ds_kernel=3,
         max_seq_len=128,
         upsample_mode='nearest',
