@@ -31,8 +31,7 @@ class RelativePositionBias1D(nn.Module):
         coords = torch.arange(N, device=device)
         rel = coords[:, None] - coords[None, :]  # [N, N]
         # clip to window and shift to [0, 2*max-2]
-        rel = rel.clamp(-self.max_rel_positions + 1,
-                        self.max_rel_positions - 1)
+        rel = rel.clamp(-self.max_rel_positions + 1, self.max_rel_positions - 1)
         rel = rel + (self.max_rel_positions - 1)
         # lookup and reshape to [1, H, N, N]
         bias = self.bias(rel)  # [N, N, H]
@@ -47,10 +46,8 @@ class Attention(nn.Module):
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         # num_patches argument is repurposed here as the max relative positions window
-        max_rel_positions = max(
-            1, int(num_patches)) if num_patches is not None else 1024
-        self.rel_pos_bias = RelativePositionBias1D(
-            num_heads=num_heads, max_rel_positions=max_rel_positions)
+        max_rel_positions = max(1, int(num_patches)) if num_patches is not None else 1024
+        self.rel_pos_bias = RelativePositionBias1D(num_heads=num_heads, max_rel_positions=max_rel_positions)
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -154,7 +151,6 @@ class ConvModule(nn.Module):
     pw (D -> eD) -> Swish -> dw(k) -> GN -> Swish -> pw (eD -> D)
     input: (B, N, D) ; internal convs on (B, C, N)
     """
-
     def __init__(self, dim, kernel_size=3, dropout=0.1, drop_path=0.0,
                  expansion=1.0, pre_norm=False, activation=nn.SiLU):
         super().__init__()
@@ -171,8 +167,7 @@ class ConvModule(nn.Module):
 
         self.pw2 = nn.Conv1d(hidden, dim, kernel_size=1, bias=True)
         self.dropout = nn.Dropout(dropout)
-        self.drop_path = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
         if self.pre_norm is not None:
@@ -186,6 +181,7 @@ class ConvModule(nn.Module):
         z = self.pw2(z)
         z = self.dropout(z).transpose(1, 2)
         return self.drop_path(z)
+
 
 
 class Downsample1D(nn.Module):
@@ -220,8 +216,7 @@ class Upsample1D(nn.Module):
 
     def __init__(self, dim, mode: str = 'nearest'):
         super().__init__()
-        assert mode in (
-            'nearest', 'linear'), "Upsample1D mode must be 'nearest' or 'linear'"
+        assert mode in ('nearest', 'linear'), "Upsample1D mode must be 'nearest' or 'linear'"
         self.mode = mode
         self.proj = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
 
@@ -231,28 +226,9 @@ class Upsample1D(nn.Module):
             x = F.interpolate(x, size=target_len, mode='nearest')
         else:
             # 1D linear interpolation
-            x = F.interpolate(x, size=target_len,
-                              mode='linear', align_corners=False)
+            x = F.interpolate(x, size=target_len, mode='linear', align_corners=False)
         x = self.proj(x)
         return x.transpose(1, 2)                         # [B, N_high, D]
-
-
-class ResidualAffine(nn.Module):
-    """Per-channel affine gate applied to a residual branch: y = gamma * x + beta."""
-
-    def __init__(self, dim, init_gamma=1e-5, init_beta=0.0, inplace=False):
-        super().__init__()
-        self.inplace = inplace
-        self.gamma = nn.Parameter(torch.full((dim,), float(init_gamma)))
-        self.beta = nn.Parameter(torch.full((dim,), float(init_beta)))
-
-    # x: [B, N, D]  (broadcast over last dim)
-    def forward(self, x):
-        if self.inplace:
-            x.mul_(self.gamma).add_(self.beta)
-            return x
-        return x * self.gamma + self.beta
-
 
 class SqueezeformerBlock(nn.Module):
     def __init__(self,
@@ -267,8 +243,7 @@ class SqueezeformerBlock(nn.Module):
                  conv_expansion=1.0,          # NEW
                  norm_layer=nn.LayerNorm,
                  drop_path=0.0,
-                 residual_init=1e-5,   # reuse this as gamma init
-                 layershift_init=0.0):   # NEW: beta init     # NEW
+                 layerscale_init=1e-5):       # NEW
         super().__init__()
 
         ff_hidden = int(dim * mlp_ratio)
@@ -276,13 +251,11 @@ class SqueezeformerBlock(nn.Module):
         self.attn = Attention(dim, num_patches, num_heads=num_heads,
                               qkv_bias=True, attn_drop=attn_dropout, proj_drop=ff_dropout)
 
-        self.ffn1 = FeedForward(
-            dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
+        self.ffn1 = FeedForward(dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
         self.conv = ConvModule(dim, kernel_size=conv_kernel_size,
                                dropout=conv_dropout, drop_path=0.0,
                                expansion=conv_expansion, pre_norm=False, activation=nn.SiLU)
-        self.ffn2 = FeedForward(
-            dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
+        self.ffn2 = FeedForward(dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
 
         # post-LNs
         self.postln_attn = norm_layer(dim, elementwise_affine=True)
@@ -291,39 +264,29 @@ class SqueezeformerBlock(nn.Module):
         self.postln_ffn2 = norm_layer(dim, elementwise_affine=True)
 
         # stochastic depth
-        self.dp_attn = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn1 = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_conv = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn2 = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_attn = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_conv = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-        # Residual affine gates (γ, β) on each branch
-        self.ra_attn = ResidualAffine(
-            dim, init_gamma=residual_init, init_beta=layershift_init)
-        self.ra_ffn1 = ResidualAffine(
-            dim, init_gamma=residual_init, init_beta=layershift_init)
-        self.ra_conv = ResidualAffine(
-            dim, init_gamma=residual_init, init_beta=layershift_init)
-        self.ra_ffn2 = ResidualAffine(
-            dim, init_gamma=residual_init, init_beta=layershift_init)
+        # LayerScale on each residual branch (tiny init)
+        self.ls_attn = LayerScale(dim, init_values=layerscale_init)
+        self.ls_ffn1 = LayerScale(dim, init_values=layerscale_init)
+        self.ls_conv = LayerScale(dim, init_values=layerscale_init)
+        self.ls_ffn2 = LayerScale(dim, init_values=layerscale_init)
 
     def forward(self, x):
         # 1) MHA (residual -> PostLN)
-        x = self.postln_attn(x + self.ra_attn(self.dp_attn(self.attn(x))))
+        x = self.postln_attn(x + self.ls_attn(self.dp_attn(self.attn(x))))
 
         # 2) 1/2 FFN (macaron) (residual -> PostLN)
-        x = self.postln_ffn1(
-            x + self.ra_ffn1(0.5 * self.dp_ffn1(self.ffn1(x))))
+        x = self.postln_ffn1(x + self.ls_ffn1(0.5 * self.dp_ffn1(self.ffn1(x))))
 
         # 3) Conv (residual -> PostLN)
-        x = self.postln_conv(x + self.ra_conv(self.dp_conv(self.conv(x))))
+        x = self.postln_conv(x + self.ls_conv(self.dp_conv(self.conv(x))))
 
         # 4) 1/2 FFN (residual -> PostLN)
-        x = self.postln_ffn2(
-            x + self.ra_ffn2(0.5 * self.dp_ffn2(self.ffn2(x))))
+        x = self.postln_ffn2(x + self.ls_ffn2(0.5 * self.dp_ffn2(self.ffn2(x))))
         return x
 
 
@@ -417,12 +380,12 @@ class MaskedAutoencoderViT(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
             SqueezeformerBlock(embed_dim, num_heads, self.max_rel_pos,
-                               mlp_ratio=mlp_ratio,
-                               ff_dropout=dropout, attn_dropout=dropout,
-                               conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
-                               conv_expansion=1.0,                 # Swish@1.0 to start
-                               norm_layer=norm_layer, drop_path=dpr[i],
-                               layerscale_init=1e-5)
+                            mlp_ratio=mlp_ratio,
+                            ff_dropout=dropout, attn_dropout=dropout,
+                            conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
+                            conv_expansion=1.0,                 # Swish@1.0 to start
+                            norm_layer=norm_layer, drop_path=dpr[i],
+                            layerscale_init=1e-5)
             for i in range(depth)
         ])
 
