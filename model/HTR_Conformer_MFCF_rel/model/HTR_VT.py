@@ -8,6 +8,7 @@ from model import resnet18
 from functools import partial
 import random
 import re
+import warnings
 
 
 class RelativePositionBias1D(nn.Module):
@@ -375,10 +376,6 @@ class MaskedAutoencoderViT(nn.Module):
         # Use a configurable max sequence length for relative position window
         self.max_rel_pos = int(max_seq_len)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        # Keep a tiny, unused pos_embed for checkpoint compatibility (unused)
-        self.pos_embed = nn.Parameter(
-            torch.zeros(1, 1, embed_dim), requires_grad=False
-        )
 
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
@@ -483,7 +480,12 @@ class MaskedAutoencoderViT(nn.Module):
         pruned_keys = [k for k in upgraded.keys() if k.endswith('.pos_embed')]
         for k in pruned_keys:
             upgraded.pop(k, None)
-        return super().load_state_dict(upgraded, strict=strict)
+        try:
+            return super().load_state_dict(upgraded, strict=strict)
+        except RuntimeError as e:
+            warnings.warn(
+                f"Strict checkpoint load failed ({e}); retrying with strict=False to ignore positional/relative bias/head mismatches.")
+            return super().load_state_dict(upgraded, strict=False)
 
     # ---- MMS helpers ----
     # ---------------------------
