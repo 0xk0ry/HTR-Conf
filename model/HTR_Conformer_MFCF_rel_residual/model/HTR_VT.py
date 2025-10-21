@@ -422,7 +422,7 @@ class MaskedAutoencoderViT(nn.Module):
                                conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
                                conv_expansion=1.0,                 # Swish@1.0 to start
                                norm_layer=norm_layer, drop_path=dpr[i],
-                               layerscale_init=1e-5)
+                               residual_init=1e-5)
             for i in range(depth)
         ])
 
