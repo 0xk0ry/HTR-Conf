@@ -37,7 +37,7 @@ def main():
         else:
             model_dict[k] = v
 
-    model.load_state_dict(model_dict, strict=False)
+    model.load_state_dict(model_dict, strict=True)
     model = model.cuda()
 
     logger.info('Loading test loader...')
