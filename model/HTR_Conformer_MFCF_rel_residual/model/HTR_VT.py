@@ -457,6 +457,7 @@ class MaskedAutoencoderViT(nn.Module):
         """
         Map legacy parameter names to the current module structure, in-place.
         - blocks.*.conv_layer_norm.* -> blocks.*.conv_module.layer_norm.*
+        - blocks.*.ls_(attn|ffn1|conv|ffn2).gamma -> blocks.*.ra_\1.gamma and create beta when missing
         """
         if not isinstance(state_dict, dict):
             return state_dict
@@ -498,6 +499,29 @@ class MaskedAutoencoderViT(nn.Module):
                         remapped[new_k] = v
                     to_delete.append(k)
                     break
+
+        # Map legacy LayerScale (ls_*) gamma to ResidualAffine (ra_*) gamma and synthesize beta
+        # Example: blocks.0.ls_attn.gamma -> blocks.0.ra_attn.gamma (copy), blocks.0.ra_attn.beta (zeros)
+        ls_pattern = re.compile(r"^blocks\.(\d+)\.ls_(attn|ffn1|conv|ffn2)\.gamma$")
+        for k, v in list(state_dict.items()):
+            m = ls_pattern.match(k)
+            if not m:
+                continue
+            idx = m.group(1)
+            branch = m.group(2)
+            gamma_key = f"blocks.{idx}.ra_{branch}.gamma"
+            beta_key = f"blocks.{idx}.ra_{branch}.beta"
+            # map gamma
+            if gamma_key not in state_dict and gamma_key not in remapped:
+                remapped[gamma_key] = v
+            # synthesize beta as zeros like gamma
+            if beta_key not in state_dict and beta_key not in remapped:
+                try:
+                    remapped[beta_key] = torch.zeros_like(v)
+                except Exception:
+                    # Fallback to CPU float zeros if device/dtype unknown
+                    remapped[beta_key] = torch.zeros(v.shape)
+            to_delete.append(k)
 
         if remapped or to_delete:
             # apply removals then additions to avoid key overlap issues
