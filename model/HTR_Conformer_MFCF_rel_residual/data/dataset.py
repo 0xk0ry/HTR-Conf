@@ -88,6 +88,8 @@ class myLoadDS(Dataset):
                         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
                         '0123456789'
                         '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
+                        'üäöß'
+                        'ÜÄÖẞ'
                     )
                 }
         if mln != None:
