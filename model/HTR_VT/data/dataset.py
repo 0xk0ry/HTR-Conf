@@ -80,9 +80,14 @@ class myLoadDS(Dataset):
                     )
                 }
             else:
-                alph = get_alphabet(self.tlbls)
-                self.ralph = dict(zip(alph.values(), alph.keys()))
-                self.alph = alph
+                self.ralph = {
+                    idx: char for idx, char in enumerate(
+                        'abcdefghijklmnopqrstuvwxyz'
+                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                        '0123456789'
+                        '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
+                    )
+                }
         if mln != None:
             filt = [len(x) <= mln if fmin else len(x)
                     >= mln for x in self.tlbls]
