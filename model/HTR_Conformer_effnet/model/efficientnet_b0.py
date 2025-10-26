@@ -159,15 +159,13 @@ class EfficientNet1x128(nn.Module):
 
         # --- Blocks ---
         class FusedMBConv(nn.Module):
-            def __init__(self, in_ch, out_ch, stride=(1, 1), k=3, dp=0.0, expand: int = 2):
+            def __init__(self, in_ch, out_ch, stride=(1, 1), k=3, dp=0.0):
                 super().__init__()
-                mid = in_ch * expand
                 self.use_res = (stride == (1, 1)) and (in_ch == out_ch)
-                # fused expand: kxk conv to mid, then 1x1 to out
-                self.conv1 = nn.Conv2d(in_ch, mid, kernel_size=k, stride=stride, padding=k//2, bias=False)
-                self.bn1 = norm2d(mid)
+                self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=k, stride=stride, padding=k//2, bias=False)
+                self.bn1 = norm2d(out_ch)
                 self.act1 = nn.SiLU(inplace=True)
-                self.conv2 = nn.Conv2d(mid, out_ch, kernel_size=1, bias=False)
+                self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=1, bias=False)
                 self.bn2 = norm2d(out_ch)
                 self.dp = DropPath(dp)
 
@@ -176,8 +174,7 @@ class EfficientNet1x128(nn.Module):
                 out = self.bn2(self.conv2(out))
                 if self.use_res:
                     out = x + self.dp(out)
-                # No activation after projection
-                return out
+                return nn.functional.silu(out, inplace=True)
 
         class MBConvAA(nn.Module):
             def __init__(self, in_ch, out_ch, stride=(1, 1), expand=4, k=3, se_ratio=0.25, dp=0.0,
@@ -229,8 +226,7 @@ class EfficientNet1x128(nn.Module):
                 out = self.pw_project(out)
                 if self.use_res:
                     out = x + self.dp(out)
-                # No activation after projection
-                return out
+                return nn.functional.silu(out, inplace=True)
 
         # Schedule DropPath across blocks (linearly to drop_path_rate)
         # Total blocks: 2 per stage * 5 stages = 10
@@ -238,7 +234,7 @@ class EfficientNet1x128(nn.Module):
         dp_rates = [i * (drop_path_rate / (total_blocks - 1)) for i in range(total_blocks)] if total_blocks > 1 else [0.0]
         dp_iter = iter(dp_rates)
 
-        def stage(in_ch, out_ch, num_blocks, stride, k=3, fused=False, aa=False, aa_kind='avg', fused_expand: int = 2):
+        def stage(in_ch, out_ch, num_blocks, stride, k=3, fused=False, aa=False, aa_kind='avg'):
             blocks = []
             # kernel size widening after H <= 8
             _k = k
@@ -246,7 +242,7 @@ class EfficientNet1x128(nn.Module):
                 dp = next(dp_iter)
                 block_stride = stride if bi == 0 else (1, 1)
                 if fused:
-                    blocks.append(FusedMBConv(in_ch if bi == 0 else out_ch, out_ch, stride=block_stride, k=_k, dp=dp, expand=fused_expand))
+                    blocks.append(FusedMBConv(in_ch if bi == 0 else out_ch, out_ch, stride=block_stride, k=_k, dp=dp))
                 else:
                     blocks.append(MBConvAA(in_ch if bi == 0 else out_ch, out_ch, stride=block_stride,
                                            expand=expand, k=_k, se_ratio=se_ratio, dp=dp,
@@ -263,14 +259,14 @@ class EfficientNet1x128(nn.Module):
 
         # Stage configs
         # Stage1 (fused): 32x512 -> 16x512, use fused MBConv, kernel 3
-        self.stage1 = stage(ch, 96, num_blocks=2, stride=(2, 1), k=3, fused=True, fused_expand=2)
-        # Stage2 (classic MBConv): 16x512 -> 8x512
-        self.stage2 = stage(96, 128, num_blocks=2, stride=(2, 1), k=3, fused=False)
-        # Stage3: anti-aliased (2,2), k=3 -> 8x512 -> 4x256
-        self.stage3 = stage(128, 160, num_blocks=2, stride=(2, 2), k=3, fused=False, aa=True, aa_kind='avg')
-        # Stage4: H<=8, widen DW kernel to 5, stride (2,1): 4x256 -> 2x256
-        self.stage4 = stage(160, 144, num_blocks=2, stride=(2, 1), k=5, fused=False)
-        # Stage5: H small, widen to 5, anti-aliased (2,2): 2x256 -> 1x128
+        self.stage1 = stage(ch, 64, num_blocks=2, stride=(2, 1), k=3, fused=True)
+        # Stage2 (classic MBConv): 16x512 -> 8x512 (keep modest width)
+        self.stage2 = stage(64, 96, num_blocks=2, stride=(2, 1), k=3, fused=False)
+        # Stage3: anti-aliased (2,2), keep width modest (128): 8x512 -> 4x256
+        self.stage3 = stage(96, 128, num_blocks=2, stride=(2, 2), k=3, fused=False, aa=True, aa_kind='avg')
+        # Stage4: smaller width than before (144 vs 192), widen DW kernel to 5: 4x256 -> 2x256
+        self.stage4 = stage(128, 144, num_blocks=2, stride=(2, 1), k=5, fused=False)
+        # Stage5: smaller width (176 vs 256), anti-aliased (2,2), kernel 5: 2x256 -> 1x128
         self.stage5 = stage(144, 176, num_blocks=2, stride=(2, 2), k=5, fused=False, aa=True, aa_kind='avg')
 
         # Cheap horizontal context before head: 1x5 depthwise conv
