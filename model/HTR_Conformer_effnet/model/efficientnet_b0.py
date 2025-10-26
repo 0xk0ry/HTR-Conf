@@ -43,9 +43,11 @@ class EfficientNetB0(nn.Module):
         self.act = nn.SiLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, 1, W, H]
-        feats = self.backbone(x)[0]  # [B, C_in, W', H']
+        # x: [B, 1, H, W]  (standard CHW; comment in file can be ignored)
+        feats = self.backbone(x)[0]                  # [B, C_in, H', W']
         feats = self.proj(feats)
         feats = self.bn(feats)
         feats = self.act(feats)
-        return feats  # [B, nb_feat, W', H']
+        feats = feats.mean(dim=2, keepdim=True)      # collapse H' -> 1  => [B, C, 1, W']
+        return feats
+
