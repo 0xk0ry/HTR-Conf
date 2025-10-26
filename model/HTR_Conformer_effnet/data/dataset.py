@@ -81,7 +81,7 @@ class myLoadDS(Dataset):
                     )
                 }
             else:
-                # English (or default): dynamically derive alphabet from labels                
+                # English (or default): dynamically derive alphabet from labels
                 self.ralph = {
                     idx: char for idx, char in enumerate(
                         'abcdefghijklmnopqrstuvwxyz'

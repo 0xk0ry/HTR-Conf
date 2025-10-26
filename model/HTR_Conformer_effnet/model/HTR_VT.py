@@ -371,9 +371,9 @@ class MaskedAutoencoderViT(nn.Module):
     ):
         super().__init__()
 
-    # Use EfficientNet-B0 backbone to produce a feature map with channel dimension = embed_dim
-    # Set pretrained=False by default to avoid accidental internet downloads; adjust as needed.
-    self.patch_embed = efficientnet_b0.EfficientNetB0(embed_dim, pretrained=False)
+        # Use EfficientNet-B0 backbone to produce a feature map with channel dimension = embed_dim
+        # Set pretrained=False by default to avoid accidental internet downloads; adjust as needed.
+        self.patch_embed = efficientnet_b0.EfficientNetB0(embed_dim, pretrained=False)
         self.embed_dim = embed_dim
         # Use a configurable max sequence length for relative position window
         self.max_rel_pos = int(max_seq_len)
