@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint_sequential
 
 
 class EfficientNetB0(nn.Module):
@@ -129,15 +128,8 @@ class EfficientNet1x128(nn.Module):
                  se_ratio: float = 0.25,
                  expand: int = 4,
                  norm: str = 'bn',            # 'bn' or 'gn'
-                 drop_path_rate: float = 0.1,
-                 use_checkpoint: bool = False,
-                 checkpoint_chunks: int = 2,
-                 use_channels_last: bool = False):
+                 drop_path_rate: float = 0.1):
         super().__init__()
-        # Memory options
-        self.use_checkpoint = bool(use_checkpoint)
-        self.checkpoint_chunks = int(checkpoint_chunks) if int(checkpoint_chunks) > 0 else 1
-        self.use_channels_last = bool(use_channels_last)
 
         # --- Norm factory ---
         def norm2d(ch: int):
@@ -291,25 +283,12 @@ class EfficientNet1x128(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Optional channels-last to improve memory bandwidth/throughput on GPU.
-        if self.use_channels_last:
-            x = x.contiguous(memory_format=torch.channels_last)
-
         x = self.stem(x)
-
-        # Apply gradient checkpointing per stage during training to reduce activation memory.
-        if self.use_checkpoint and self.training:
-            x = checkpoint_sequential(self.stage1, self.checkpoint_chunks, x)
-            x = checkpoint_sequential(self.stage2, self.checkpoint_chunks, x)
-            x = checkpoint_sequential(self.stage3, self.checkpoint_chunks, x)
-            x = checkpoint_sequential(self.stage4, self.checkpoint_chunks, x)
-            x = checkpoint_sequential(self.stage5, self.checkpoint_chunks, x)
-        else:
-            x = self.stage1(x)
-            x = self.stage2(x)
-            x = self.stage3(x)
-            x = self.stage4(x)
-            x = self.stage5(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        x = self.stage5(x)
         x = self.horiz_context(x)
         x = self.head(x)  # [B, embed_dim, 1, 128]
         return x
