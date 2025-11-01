@@ -201,7 +201,7 @@ def main():
     d_vis = model.embed_dim
 
     sgm_head = SGMHead(d_vis=d_vis, vocab_size_sgm=vocab_size_sgm,
-                       sub_str_len=sgm_sub_len).cuda()
+                       band_width=16).cuda()
     if sgm_head is not None:
         sgm_head.train()
     # Respect flag to disable SGM entirely
