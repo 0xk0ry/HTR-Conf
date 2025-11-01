@@ -94,8 +94,10 @@ class SGMHead(nn.Module):
         self.tau = nn.Parameter(torch.tensor(1.0))
         self.dropout = nn.Dropout(p_drop)
         self.classifier = nn.Linear(d_vis, vocab_size_sgm)
-        # tie weights
-        self.classifier.weight = self.emb.weight  # optional: remove if dims differ
+        # Only tie weights when text-embedding dim matches visual dim
+        # Otherwise, keep independent classifier to avoid shape mismatch at runtime
+        if self.classifier.weight.shape == self.emb.weight.shape:
+            self.classifier.weight = self.emb.weight
 
     def _context_to_query(self, ctx_ids, dir_token):
         E = self.emb(ctx_ids)               # [B,L,S,d_txt]
