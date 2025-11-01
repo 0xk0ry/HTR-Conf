@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import torch.utils.data
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -88,7 +89,32 @@ def compute_losses(
 
         out = sgm_head(feats, left_ctx, right_ctx, tgt_ids,
                        tgt_mask, vis_mask=vis_mask)   # feats: [B,N,D]
-        loss_sgm = out['loss_sgm']
+
+        # Supervised CE on current target (left and right), plus agreement regularizer
+        logits_l = out['logits_l']  # [B, L, V]
+        logits_r = out['logits_r']  # [B, L, V]
+        V = logits_l.size(-1)
+
+        ce_l = F.cross_entropy(
+            logits_l.reshape(-1, V),
+            tgt_ids.reshape(-1),
+            reduction='none'
+        ).reshape(tgt_ids.shape)
+        ce_r = F.cross_entropy(
+            logits_r.reshape(-1, V),
+            tgt_ids.reshape(-1),
+            reduction='none'
+        ).reshape(tgt_ids.shape)
+
+        # mask out pads
+        denom = tgt_mask.sum().clamp_min(1.)
+        ce_l = (ce_l * tgt_mask).sum() / denom
+        ce_r = (ce_r * tgt_mask).sum() / denom
+
+        ce_mean = 0.5 * (ce_l + ce_r)
+
+        # out['loss_sgm'] already equals 0.1 * agreement
+        loss_sgm = ce_mean + out['loss_sgm']
 
     # 4) Combine with weights
     total = ctc_lambda * loss_ctc + sgm_lambda * loss_sgm

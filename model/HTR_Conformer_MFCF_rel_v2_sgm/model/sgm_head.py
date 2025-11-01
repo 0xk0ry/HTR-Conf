@@ -137,9 +137,14 @@ class SGMHead(nn.Module):
         scores = scores / (Dh ** 0.5 * tau)
 
         if vis_mask is not None:
-            # vis_mask: [B, L, N] -> expand across heads
-            m = vis_mask.unsqueeze(1)  # [B, 1, L, N]
-            scores = scores * m
+            # vis_mask: [B, L, N]
+            # Use additive masking (stable):
+            #  - boolean mask: set masked positions to -inf
+            #  - soft mask in [0,1]: add log(mask) so 0 -> -inf, 1 -> 0
+            if vis_mask.dtype == torch.bool:
+                scores = scores.masked_fill(~vis_mask.unsqueeze(1), float('-inf'))
+            else:
+                scores = scores + torch.log(vis_mask.clamp_min(1e-6)).unsqueeze(1)
 
         attn = torch.softmax(scores, dim=-1)  # [B, H, L, N]
         attn = self.dropout(attn)
