@@ -76,8 +76,8 @@ def compute_losses(
     if sgm_head is not None and feats is not None:
         left_ctx, right_ctx, tgt_ids, tgt_mask = make_context_batch(
             texts, stoi, sub_str_len=getattr(args, 'sgm_sub_len', 5), device=preds.device)
-        txt_ctx = torch.cat([left, right], dim=2)   # [B, L, 2S]
-        out, H, A = sgm_head(vis_tokens, txt_ctx, pos_centers=None, use_band=True)
+        txt_ctx = torch.cat([left_ctx, right_ctx], dim=2)   # [B, L, 2S]
+        out, H, A = sgm_head(feats, txt_ctx, pos_centers=None, use_band=True)
         loss_sgm = out['loss_sgm']
 
     # 4) Combine with weights
