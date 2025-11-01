@@ -32,37 +32,58 @@ def compute_losses(
     ctc_lambda,
     sgm_lambda,
     stoi,
-    mask_mode='span',
+    mask_mode='span_old',
     mask_ratio=0.30,
     max_span_length=8,
-    mix_ratios=None,   # (r_rand, r_block, r_span)
-    mix_weights=None,  # (w_rand, w_block, w_span)
+    external_keep=None,
+    return_mask=False,
 ):
     # 1) Forward
+    keep_mask = None
     if sgm_head is None or nb_iter < getattr(args, 'sgm_warmup_iters', 0):
-        preds = model(
-            image,
-            use_masking=True,
-            mask_mode=mask_mode,
-            mask_ratio=mask_ratio,
-            max_span_length=max_span_length,
-            ratios=mix_ratios,
-            weights=mix_weights,
-        )   # [B, N, V_ctc]
-        feats = None
+        if return_mask:
+            preds, keep_mask = model(
+                image,
+                use_masking=True,
+                mask_mode=mask_mode,
+                mask_ratio=mask_ratio,
+                max_span_length=max_span_length,
+                external_keep=external_keep,
+                return_mask=True,
+            )   # [B, N, V_ctc], [B, N, 1]
+            feats = None
+        else:
+            preds = model(
+                image,
+                use_masking=True,
+                mask_mode=mask_mode,
+                mask_ratio=mask_ratio,
+                max_span_length=max_span_length,
+                external_keep=external_keep,
+            )   # [B, N, V_ctc]
+            feats = None
     else:
-        # Updated call: removed outdated positional arguments (args.mask_ratio, args.max_span_length)
-        # to avoid passing multiple values for 'use_masking' (TypeError). Use keyword args instead.
-        preds, feats = model(
-            image,
-            use_masking=True,
-            return_features=True,
-            mask_mode=mask_mode,
-            mask_ratio=mask_ratio if mask_ratio is not None else getattr(args, 'mask_ratio', 0.0),
-            max_span_length=max_span_length if max_span_length is not None else getattr(args, 'max_span_length', 0),
-            ratios=mix_ratios,
-            weights=mix_weights,
-        )   # [B, N, V_ctc], [B, N, D]
+        if return_mask:
+            preds, feats, keep_mask = model(
+                image,
+                use_masking=True,
+                return_features=True,
+                mask_mode=mask_mode,
+                mask_ratio=mask_ratio if mask_ratio is not None else getattr(args, 'mask_ratio', 0.0),
+                max_span_length=max_span_length if max_span_length is not None else getattr(args, 'max_span_length', 0),
+                external_keep=external_keep,
+                return_mask=True,
+            )   # [B, N, V_ctc], [B, N, D], [B, N, 1]
+        else:
+            preds, feats = model(
+                image,
+                use_masking=True,
+                return_features=True,
+                mask_mode=mask_mode,
+                mask_ratio=mask_ratio if mask_ratio is not None else getattr(args, 'mask_ratio', 0.0),
+                max_span_length=max_span_length if max_span_length is not None else getattr(args, 'max_span_length', 0),
+                external_keep=external_keep,
+            )   # [B, N, V_ctc], [B, N, D]
 
     # 2) CTC loss
     text_ctc, length_ctc = converter.encode(
@@ -82,24 +103,43 @@ def compute_losses(
 
     # 4) Combine with weights
     total = ctc_lambda * loss_ctc + sgm_lambda * loss_sgm
+    if return_mask:
+        return total, loss_ctc.detach(), loss_sgm.detach(), keep_mask
     return total, loss_ctc.detach(), loss_sgm.detach()
 
 
 def tri_masked_loss(args, model, sgm_head, image, labels, batch_size,
                     criterion, converter, nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.30, r_block=0.20, r_span=0.20, max_span=8):
+                    r_rand=0.30, r_block=0.20, r_span=0.20, max_span=8,
+                    mask_cache: dict = None, reuse_masks: bool = False):
     total = 0.0
     total_ctc = 0.0
     total_sgm = 0.0
-    weights = {"random": 1.0, "block": 1.0, "span": 1.0}
-    plans = [("random", r_rand), ("block", r_block), ("span", r_span)]
+    weights = {"random": 1.0, "block": 1.0, "span_old": 1.0}
+    plans = [("random", r_rand), ("block", r_block), ("span_old", r_span)]
 
     for mode, ratio in plans:
-        loss, loss_ctc, loss_sgm = compute_losses(
-            args, model, sgm_head, image, labels, batch_size, criterion, converter,
-            nb_iter, ctc_lambda, sgm_lambda, stoi,
-            mask_mode=mode, mask_ratio=ratio, max_span_length=max_span
-        )
+        external_keep = None
+        if reuse_masks and mask_cache is not None:
+            external_keep = mask_cache.get(mode, None)
+
+        if reuse_masks:
+            loss, loss_ctc, loss_sgm = compute_losses(
+                args, model, sgm_head, image, labels, batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                mask_mode=mode, mask_ratio=ratio, max_span_length=max_span,
+                external_keep=external_keep, return_mask=False,
+            )
+        else:
+            out = compute_losses(
+                args, model, sgm_head, image, labels, batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                mask_mode=mode, mask_ratio=ratio, max_span_length=max_span,
+                external_keep=None, return_mask=True,
+            )
+            loss, loss_ctc, loss_sgm, keep_mask = out
+            if mask_cache is not None:
+                mask_cache[mode] = keep_mask.detach()
         w = weights[mode]
         total += w * loss
         total_ctc += w * loss_ctc
@@ -108,19 +148,6 @@ def tri_masked_loss(args, model, sgm_head, image, labels, batch_size,
     denom = sum(weights.values())
     return total/denom, total_ctc/denom, total_sgm/denom
 
-def mix_masked_loss(args, model, sgm_head, image, labels, batch_size,
-                    criterion, converter, nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.30, r_block=0.20, r_span=0.20, max_span=8,
-                    w_rand=1.0, w_block=1.0, w_span=1.0):
-    # Execute a single forward with mixed masking; model will sample per-sample mode
-    loss, loss_ctc, loss_sgm = compute_losses(
-        args, model, sgm_head, image, labels, batch_size, criterion, converter,
-        nb_iter, ctc_lambda, sgm_lambda, stoi,
-        mask_mode="mix", mask_ratio=None, max_span_length=max_span,
-        mix_ratios=(r_rand, r_block, r_span), mix_weights=(w_rand, w_block, w_span)
-    )
-
-    return loss, loss_ctc.detach(), loss_sgm.detach()
 
 def main():
 
@@ -273,15 +300,21 @@ def main():
         cached_batches = []
         for micro_step in range(accum_steps):
             batch = next(train_iter)
-            cached_batches.append(batch)  # cache CPU tensors and labels for SAM second pass
+            # Per-micro-batch mask cache for three masking modes
+            mask_cache = {}
+            cached_batches.append({
+                'batch': batch,
+                'mask_cache': mask_cache,
+            })  # cache masks for SAM second pass
             image = batch[0].cuda(non_blocking=True)
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            loss, loss_ctc, loss_sgm = mix_masked_loss(
+            loss, loss_ctc, loss_sgm = tri_masked_loss(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8,
+                mask_cache=mask_cache, reuse_masks=False,
             )
             # scale loss to average over accum steps
             (loss / accum_steps).backward()
@@ -294,15 +327,18 @@ def main():
 
         # Recompute with perturbed weights and accumulate again for the second step
         for micro_step in range(accum_steps):
-            batch = cached_batches[micro_step]
+            cached = cached_batches[micro_step]
+            batch = cached['batch']
+            mask_cache = cached['mask_cache']
             image = batch[0].cuda(non_blocking=True)
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            loss2, _, _ = mix_masked_loss(
+            loss2, _, _ = tri_masked_loss(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8,
+                mask_cache=mask_cache, reuse_masks=True,
             )
             (loss2 / accum_steps).backward()
 

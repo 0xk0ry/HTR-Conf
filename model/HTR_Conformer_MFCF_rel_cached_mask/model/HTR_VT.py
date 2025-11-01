@@ -488,6 +488,10 @@ class MaskedAutoencoderViT(nn.Module):
             return super().load_state_dict(upgraded, strict=False)
 
     # ---- MMS helpers ----
+    # ---------------------------
+    # 1-D Multiple Masking
+    # ---------------------------
+
     def _mask_random_1d(self, B: int, L: int, ratio: float, device) -> torch.Tensor:
         """Random token masking on 1-D sequence. Returns bool [B, L], True = masked."""
         if ratio <= 0.0 or ratio > 1.0:
@@ -534,6 +538,55 @@ class MaskedAutoencoderViT(nn.Module):
         return mask
 
     def _mask_span_1d(self, B: int, L: int, ratio: float, max_span: int, device) -> torch.Tensor:
+        """
+        Span masking in 1-D (YOUR OLD SEMANTICS, but robust):
+        - place contiguous spans of random length s ∈ [1, max_span]
+        - enforce an Algorithm-1-like spacing policy via k depending on ratio
+        - continue until ~ratio*L tokens are covered
+        Returns bool [B, L], True = masked.
+        """
+        if ratio <= 0.0:
+            return torch.zeros(B, L, dtype=torch.bool, device=device)
+
+        L = int(L)
+        max_span = int(max(1, min(max_span, L)))
+        target = int(round(ratio * L))
+        mask = torch.zeros(B, L, dtype=torch.bool, device=device)
+
+        # spacing policy similar to Alg.1 (adapted to 1-D)
+        def spacing_for(R):
+            if R <= 0.4:
+                # use k = span length (separates spans when ratio small)
+                return None
+            elif R <= 0.7:
+                return 1
+            else:
+                return 0
+        fixed_k = spacing_for(ratio)
+
+        for b in range(B):
+            used = torch.zeros(L, dtype=torch.bool, device=device)
+            covered = int(used.sum().item())
+            for _ in range(10000):
+                if covered >= target:
+                    break
+                s = random.randint(1, max_span)
+                if s > L:
+                    s = L
+                l = random.randint(0, L - s)
+                r = l + s - 1
+                k = s if fixed_k is None else fixed_k
+                # check spacing neighborhood
+                left_ok = (l - k) < 0 or not used[max(0, l - k):l].any()
+                right_ok = (
+                    r + 1) >= L or not used[r+1:min(L, r + 1 + k)].any()
+                if left_ok and right_ok:
+                    used[l:r+1] = True
+                    covered = int(used.sum().item())
+            mask[b] = used
+        return mask
+
+    def _mask_span_old_1d(self, B: int, L: int, ratio: float, max_span: int, device) -> torch.Tensor:
         if ratio <= 0.0 or max_span <= 0 or L <= 0:
             return torch.zeros(B, L, dtype=torch.bool, device=device)
 
@@ -551,11 +604,23 @@ class MaskedAutoencoderViT(nn.Module):
 
         return mask
 
+    def generate_span_mask(self, x, mask_ratio, max_span_length):
+        N, L, D = x.shape  # batch, length, dim
+        mask = torch.ones(N, L, 1).to(x.device)
+        span_length = int(L * mask_ratio)
+        num_spans = span_length // max_span_length
+        for i in range(num_spans):
+            idx = torch.randint(L - max_span_length, (1,))
+            mask[:, idx:idx + max_span_length, :] = 0
+        return mask
+
     # inside MaskedAutoencoderViT.forward_features(...)
     def forward_features(self, x, use_masking=False,
-                         mask_mode="span",   # "random" | "block" | "span" | "mix"
+                         mask_mode="span_old",   # "random" | "block" | "span_old"
                          mask_ratio=0.5, max_span_length=8,
-                         ratios=None, block_params=None, weights=None):
+                         ratios=None, block_params=None,
+                         external_keep: torch.Tensor = None,
+                         return_mask: bool = False):
         # [B,C,W,H] -> your [B,N,D] after reshape
         x = self.patch_embed(x)
         B, C, W, H = x.shape
@@ -563,49 +628,26 @@ class MaskedAutoencoderViT(nn.Module):
         assert C == self.embed_dim, f"Expected embed_dim {self.embed_dim}, got {C}"
         x = x.view(B, C, -1).permute(0, 2, 1)         # [B,N,D]
 
+        keep = None
         if use_masking:
-            if mask_mode == "random":
-                keep = (~self._mask_random_1d(B, x.size(1),
-                        mask_ratio, x.device)).float().unsqueeze(-1)
-            elif mask_mode == "block":
-                keep = (~self._mask_block_1d(B, x.size(1),
-                        mask_ratio, x.device)).float().unsqueeze(-1)
-            elif mask_mode in ("span", "span_old"):
-                # support legacy alias "span_old"; implementation uses current _mask_span_1d
-                keep = (~self._mask_span_1d(B, x.size(1), mask_ratio,
-                        max_span_length, x.device)).float().unsqueeze(-1)
-            else: # mask_mode == "mix":
-                B, L = x.size(0), x.size(1)
-                # defaults
-                ratios = ratios or (0.60, 0.40, 0.40)   # (random, block, span)
-                weights = weights or (1.0, 1.0, 1.0)
-                probs = torch.tensor(weights, device=x.device, dtype=torch.float)
-                probs = probs / probs.sum()
-                # choose a mode per sample: 0=random, 1=block, 2=span
-                choices = torch.multinomial(probs, B, replacement=True)
+            if external_keep is not None:
+                # Reuse a provided keep mask [B, N, 1]
+                keep = external_keep
+            else:
+                if mask_mode == "random":
+                    keep = (~self._mask_random_1d(B, x.size(1),
+                            mask_ratio, x.device)).float().unsqueeze(-1)
+                elif mask_mode == "block":
+                    keep = (~self._mask_block_1d(B, x.size(1),
+                            mask_ratio, x.device)).float().unsqueeze(-1)
+                else:
+                    keep = (~self._mask_span_old_1d(B, x.size(1), mask_ratio,
+                            max_span_length, x.device)).float().unsqueeze(-1)
 
-                keep_bool = torch.zeros(B, L, dtype=torch.bool, device=x.device)
+            # Apply masking by mixing with a learnable mask token
+            # x: [B, N, D], keep: [B, N, 1], mask_token: [1, 1, D] broadcasts to [B, N, D]
+            x = keep * x + (1.0 - keep) * self.mask_token
 
-                # random
-                idx = (choices == 0)
-                if idx.any():
-                    m = self._mask_random_1d(int(idx.sum().item()), L, float(ratios[0]), x.device)
-                    keep_bool[idx] = ~m
-
-                # block
-                idx = (choices == 1)
-                if idx.any():
-                    m = self._mask_block_1d(int(idx.sum().item()), L, float(ratios[1]), x.device, min_block=2)
-                    keep_bool[idx] = ~m
-
-                # span
-                idx = (choices == 2)
-                if idx.any():
-                    m = self._mask_span_1d(int(idx.sum().item()), L, float(ratios[2]), int(max_span_length), x.device)
-                    keep_bool[idx] = ~m
-
-                keep = keep_bool.float().unsqueeze(-1)  # [B, L, 1]
-            x = keep * x + (1.0 - keep) * self.mask_token.expand(x.size(0), x.size(1), x.size(2))
         # Relative positional encoding is applied inside Attention; no absolute PE added here
 
         skip_hi = None
@@ -628,18 +670,32 @@ class MaskedAutoencoderViT(nn.Module):
                 # fuse by simple addition
                 x = x + skip_hi
 
-        return self.norm(x)
+        x = self.norm(x)
+        if return_mask:
+            return x, keep
+        return x
 
     def forward(self, x, use_masking=False, return_features=False,
-                mask_mode="span", mask_ratio=None, max_span_length=None,
-                ratios=None, weights=None):
-        feats = self.forward_features(
+                mask_mode="span_old", mask_ratio=None, max_span_length=None,
+                external_keep: torch.Tensor = None, return_mask: bool = False):
+        out = self.forward_features(
             # [B, N, D]
             x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio,
-            max_span_length=max_span_length, ratios=ratios, weights=weights)
+            max_span_length=max_span_length, external_keep=external_keep, return_mask=return_mask)
+
+        if return_mask:
+            feats, keep = out
+        else:
+            feats = out
+            keep = None
+
         logits = self.head(feats)               # [B, N, nb_cls]  → CTC
+        if return_features and return_mask:
+            return logits, feats, keep
         if return_features:
             return logits, feats
+        if return_mask:
+            return logits, keep
         return logits
 
 
