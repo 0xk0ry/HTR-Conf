@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def build_sgm_vocab(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos_right>")):
+def build_sgm_vocab_size_sgm(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos_right>")):
     # converter.character is typically an ordered list or str of your symbols
     # exclude the CTC blank; keep only real symbols
     base = list(converter.character)
@@ -74,14 +74,14 @@ def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
 
 
 class SGMHead(nn.Module):
-    def __init__(self, d_vis, d_txt, vocab, band_width=16, rel_bias=True):
+    def __init__(self, d_vis, d_txt, vocab_size_sgm, band_width=16, rel_bias=True):
         super().__init__()
         self.q_proj = nn.Linear(d_txt, d_vis, bias=False)
         self.k_proj = nn.Linear(d_vis, d_vis, bias=False)
         self.v_proj = nn.Linear(d_vis, d_vis, bias=False)
         self.vis2txt = nn.Linear(d_vis, d_txt, bias=False)  # low-rank link
-        self.emb = nn.Embedding(vocab, d_txt)
-        self.classifier = nn.Linear(d_txt, vocab, bias=False)
+        self.emb = nn.Embedding(vocab_size_sgm, d_txt)
+        self.classifier = nn.Linear(d_txt, vocab_size_sgm, bias=False)
         self.classifier.weight = self.emb.weight  # weight tying
         self.band_width = band_width
         self.rel_bias = rel_bias
