@@ -278,7 +278,7 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            loss, loss_ctc, loss_sgm = tri_masked_loss(
+            loss, loss_ctc, loss_sgm = mix_masked_loss(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
                 r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
@@ -299,7 +299,7 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            loss2, _, _ = tri_masked_loss(
+            loss2, _, _ = mix_masked_loss(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
                 r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
