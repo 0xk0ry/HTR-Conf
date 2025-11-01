@@ -74,7 +74,7 @@ def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
 
 
 class SGMHead(nn.Module):
-    def __init__(self, d_vis, d_txt, vocab_size_sgm, band_width=16, rel_bias=True):
+    def __init__(self, d_vis, vocab_size_sgm, d_txt=256, band_width=16, rel_bias=True):
         super().__init__()
         self.q_proj = nn.Linear(d_txt, d_vis, bias=False)
         self.k_proj = nn.Linear(d_vis, d_vis, bias=False)
