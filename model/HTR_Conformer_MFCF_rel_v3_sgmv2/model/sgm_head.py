@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def build_sgm_vocab_size_sgm(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos_right>")):
+def build_sgm_vocab(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos_right>")):
     # converter.character is typically an ordered list or str of your symbols
     # exclude the CTC blank; keep only real symbols
     base = list(converter.character)
