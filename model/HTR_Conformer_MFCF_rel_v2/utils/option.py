@@ -12,6 +12,8 @@ def get_args_parser():
                         help='Path to checkpoint_{cer}_{wer}_{iter}.pth to resume from')
     parser.add_argument('--train-bs', default=8,
                         type=int, help='train batch size')
+    parser.add_argument('--accum-steps', default=1, type=int,
+                        help='gradient accumulation steps. Effective batch size = train-bs * accum-steps')
     parser.add_argument('--val-bs', default=1, type=int,
                         help='validation batch size')
     parser.add_argument('--num-workers', default=0,
@@ -151,7 +153,7 @@ def get_args_parser():
                         help='SGM context sub-string length')
     parser.add_argument('--sgm-warmup-iters', default=0,
                         type=int, help='SGM warmup iters, 0 = start immediately')
-    # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph)
-    parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie'],
-                        help='Language setting: eng uses dynamic alphabet, vie uses predefined Vietnamese ralph')
+    # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph) | ita (Italian) | deu (German)
+    parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie', 'ita', 'deu'],
+                        help='Language setting: eng uses dynamic alphabet; vie uses predefined Vietnamese ralph; ita adds Italian accented characters; deu adds German umlauts and ß')
     return parser.parse_args()

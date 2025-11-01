@@ -153,7 +153,7 @@ def get_args_parser():
                         help='SGM context sub-string length')
     parser.add_argument('--sgm-warmup-iters', default=0,
                         type=int, help='SGM warmup iters, 0 = start immediately')
-    # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph)
-    parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie'],
-                        help='Language setting: eng uses dynamic alphabet, vie uses predefined Vietnamese ralph')
+    # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph) | ita (Italian) | deu (German)
+    parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie', 'ita', 'deu'],
+                        help='Language setting: eng uses dynamic alphabet; vie uses predefined Vietnamese ralph; ita adds Italian accented characters; deu adds German umlauts and ß')
     return parser.parse_args()

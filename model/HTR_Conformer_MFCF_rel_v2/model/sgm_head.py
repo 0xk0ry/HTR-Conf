@@ -113,32 +113,40 @@ class SGMHead(nn.Module):
         return self.q_norm(q)
 
     # Q: [B, L, D], F: [B, N, D]
-    def _cross_attend(self, Q, F):
+    def _cross_attend(self, Q, F, return_attn: bool = False):
         # scaled dot-product attention: A = softmax(QK^T)
         K = self.kv_norm(F)
         V = K
-        attn = torch.einsum('bld,bnd->bln', Q, K) / \
-            (K.size(-1) ** 0.5)   # [B, L, N]
+        attn = torch.einsum('bld,bnd->bln', Q, K) / (K.size(-1) ** 0.5)  # [B, L, N]
         A = attn.softmax(dim=-1)
         # [B, L, D]
         out = torch.einsum('bln,bnd->bld', A, V)
-        return self.dropout(out)
+        out = self.dropout(out)
+        if return_attn:
+            return out, A
+        return out
 
-    def forward(self, vis_tokens, left_ctx_ids, right_ctx_ids, tgt_ids, tgt_mask):
+    def forward(self, vis_tokens, left_ctx_ids, right_ctx_ids, tgt_ids, tgt_mask, return_attn: bool = False):
         """
         vis_tokens: [B, N, D]; left_ctx_ids/right_ctx_ids: [B, L, S]; tgt_ids: [B, L]
         tgt_mask: [B, L] with 1 for real labels, 0 for padding (no loss).
-        Returns: dict(loss_sgm=...), logits_l, logits_r
+        Returns: dict(loss_sgm=...), logits_l, logits_r, [optional] attn_l, attn_r
         """
         Ql = self._context_to_query(
             left_ctx_ids,  self.dir_left)          # [B, L, D]
         Qr = self._context_to_query(
             right_ctx_ids, self.dir_right)         # [B, L, D]
 
-        # [B, L, D]
-        Fl = self._cross_attend(Ql, vis_tokens)
-        # [B, L, D]
-        Fr = self._cross_attend(Qr, vis_tokens)
+        if return_attn:
+            # [B, L, D], [B, L, N]
+            Fl, attn_l = self._cross_attend(Ql, vis_tokens, return_attn=True)
+            # [B, L, D], [B, L, N]
+            Fr, attn_r = self._cross_attend(Qr, vis_tokens, return_attn=True)
+        else:
+            # [B, L, D]
+            Fl = self._cross_attend(Ql, vis_tokens, return_attn=False)
+            # [B, L, D]
+            Fr = self._cross_attend(Qr, vis_tokens, return_attn=False)
 
         # [B, L, V]
         logits_l = self.classifier(Fl)
@@ -156,4 +164,8 @@ class SGMHead(nn.Module):
         denom = torch.clamp(tgt_mask.sum(), min=1.0)
         loss_sgm = loss_masked.sum() / (2.0 * denom)
 
-        return {'loss_sgm': loss_sgm, 'logits_l': logits_l, 'logits_r': logits_r}
+        out = {'loss_sgm': loss_sgm, 'logits_l': logits_l, 'logits_r': logits_r}
+        if return_attn:
+            out['attn_l'] = attn_l  # [B, L, N]
+            out['attn_r'] = attn_r  # [B, L, N]
+        return out

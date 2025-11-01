@@ -80,16 +80,38 @@ class myLoadDS(Dataset):
                         'Đ'
                     )
                 }
+            elif self.lang == 'ita':
+                # Italian alphabet: base latin + common accented vowels (grave and acute)
+                base = (
+                    'abcdefghijklmnopqrstuvwxyz'
+                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                    '0123456789'
+                    '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
+                )
+                italian_accents = 'àèéìòùÀÈÉÌÒÙ'
+                # Include rarely used acute vowels too to be safe
+                optional_acute = 'áíóúÁÍÓÚ'
+                alph = base + italian_accents + optional_acute
+                self.ralph = {idx: ch for idx, ch in enumerate(alph)}
+            elif self.lang == 'deu':
+                # German alphabet: base latin + umlauts and ß
+                base = (
+                    'abcdefghijklmnopqrstuvwxyz'
+                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                    '0123456789'
+                    '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
+                )
+                german_extras = 'äöüÄÖÜßẞ'
+                alph = base + german_extras
+                self.ralph = {idx: ch for idx, ch in enumerate(alph)}
             else:
-                # English (or default): dynamically derive alphabet from labels                
+                # English (or default): dynamically derive alphabet from labels
                 self.ralph = {
                     idx: char for idx, char in enumerate(
                         'abcdefghijklmnopqrstuvwxyz'
                         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
                         '0123456789'
                         '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
-                        'üäöß'
-                        'ÜÄÖẞ'
                     )
                 }
         if mln != None:

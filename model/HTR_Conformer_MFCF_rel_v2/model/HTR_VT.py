@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from timm.models.vision_transformer import Mlp, DropPath
 
 import numpy as np
-from model import efficientnet_b0
 from model import resnet18
 from functools import partial
 import random
@@ -32,8 +31,7 @@ class RelativePositionBias1D(nn.Module):
         coords = torch.arange(N, device=device)
         rel = coords[:, None] - coords[None, :]  # [N, N]
         # clip to window and shift to [0, 2*max-2]
-        rel = rel.clamp(-self.max_rel_positions + 1,
-                        self.max_rel_positions - 1)
+        rel = rel.clamp(-self.max_rel_positions + 1, self.max_rel_positions - 1)
         rel = rel + (self.max_rel_positions - 1)
         # lookup and reshape to [1, H, N, N]
         bias = self.bias(rel)  # [N, N, H]
@@ -48,10 +46,8 @@ class Attention(nn.Module):
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         # num_patches argument is repurposed here as the max relative positions window
-        max_rel_positions = max(
-            1, int(num_patches)) if num_patches is not None else 1024
-        self.rel_pos_bias = RelativePositionBias1D(
-            num_heads=num_heads, max_rel_positions=max_rel_positions)
+        max_rel_positions = max(1, int(num_patches)) if num_patches is not None else 1024
+        self.rel_pos_bias = RelativePositionBias1D(num_heads=num_heads, max_rel_positions=max_rel_positions)
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -155,7 +151,6 @@ class ConvModule(nn.Module):
     pw (D -> eD) -> Swish -> dw(k) -> GN -> Swish -> pw (eD -> D)
     input: (B, N, D) ; internal convs on (B, C, N)
     """
-
     def __init__(self, dim, kernel_size=3, dropout=0.1, drop_path=0.0,
                  expansion=1.0, pre_norm=False, activation=nn.SiLU):
         super().__init__()
@@ -172,8 +167,7 @@ class ConvModule(nn.Module):
 
         self.pw2 = nn.Conv1d(hidden, dim, kernel_size=1, bias=True)
         self.dropout = nn.Dropout(dropout)
-        self.drop_path = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
         if self.pre_norm is not None:
@@ -187,6 +181,7 @@ class ConvModule(nn.Module):
         z = self.pw2(z)
         z = self.dropout(z).transpose(1, 2)
         return self.drop_path(z)
+
 
 
 class Downsample1D(nn.Module):
@@ -221,8 +216,7 @@ class Upsample1D(nn.Module):
 
     def __init__(self, dim, mode: str = 'nearest'):
         super().__init__()
-        assert mode in (
-            'nearest', 'linear'), "Upsample1D mode must be 'nearest' or 'linear'"
+        assert mode in ('nearest', 'linear'), "Upsample1D mode must be 'nearest' or 'linear'"
         self.mode = mode
         self.proj = nn.Conv1d(dim, dim, kernel_size=1, bias=True)
 
@@ -232,11 +226,9 @@ class Upsample1D(nn.Module):
             x = F.interpolate(x, size=target_len, mode='nearest')
         else:
             # 1D linear interpolation
-            x = F.interpolate(x, size=target_len,
-                              mode='linear', align_corners=False)
+            x = F.interpolate(x, size=target_len, mode='linear', align_corners=False)
         x = self.proj(x)
         return x.transpose(1, 2)                         # [B, N_high, D]
-
 
 class SqueezeformerBlock(nn.Module):
     def __init__(self,
@@ -259,13 +251,11 @@ class SqueezeformerBlock(nn.Module):
         self.attn = Attention(dim, num_patches, num_heads=num_heads,
                               qkv_bias=True, attn_drop=attn_dropout, proj_drop=ff_dropout)
 
-        self.ffn1 = FeedForward(
-            dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
+        self.ffn1 = FeedForward(dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
         self.conv = ConvModule(dim, kernel_size=conv_kernel_size,
                                dropout=conv_dropout, drop_path=0.0,
                                expansion=conv_expansion, pre_norm=False, activation=nn.SiLU)
-        self.ffn2 = FeedForward(
-            dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
+        self.ffn2 = FeedForward(dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
 
         # post-LNs
         self.postln_attn = norm_layer(dim, elementwise_affine=True)
@@ -274,14 +264,10 @@ class SqueezeformerBlock(nn.Module):
         self.postln_ffn2 = norm_layer(dim, elementwise_affine=True)
 
         # stochastic depth
-        self.dp_attn = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn1 = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_conv = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
-        self.dp_ffn2 = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_attn = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_conv = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.dp_ffn2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         # LayerScale on each residual branch (tiny init)
         self.ls_attn = LayerScale(dim, init_values=layerscale_init)
@@ -294,15 +280,13 @@ class SqueezeformerBlock(nn.Module):
         x = self.postln_attn(x + self.ls_attn(self.dp_attn(self.attn(x))))
 
         # 2) 1/2 FFN (macaron) (residual -> PostLN)
-        x = self.postln_ffn1(
-            x + self.ls_ffn1(0.5 * self.dp_ffn1(self.ffn1(x))))
+        x = self.postln_ffn1(x + self.ls_ffn1(0.5 * self.dp_ffn1(self.ffn1(x))))
 
         # 3) Conv (residual -> PostLN)
         x = self.postln_conv(x + self.ls_conv(self.dp_conv(self.conv(x))))
 
         # 4) 1/2 FFN (residual -> PostLN)
-        x = self.postln_ffn2(
-            x + self.ls_ffn2(0.5 * self.dp_ffn2(self.ffn2(x))))
+        x = self.postln_ffn2(x + self.ls_ffn2(0.5 * self.dp_ffn2(self.ffn2(x))))
         return x
 
 
@@ -387,8 +371,6 @@ class MaskedAutoencoderViT(nn.Module):
     ):
         super().__init__()
 
-        # Use EfficientNet-B0 backbone to produce a feature map with channel dimension = embed_dim
-        # Set pretrained=False by default to avoid accidental internet downloads; adjust as needed.
         self.patch_embed = resnet18.ResNet18(embed_dim)
         self.embed_dim = embed_dim
         # Use a configurable max sequence length for relative position window
@@ -398,12 +380,12 @@ class MaskedAutoencoderViT(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
             SqueezeformerBlock(embed_dim, num_heads, self.max_rel_pos,
-                               mlp_ratio=mlp_ratio,
-                               ff_dropout=dropout, attn_dropout=dropout,
-                               conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
-                               conv_expansion=1.0,                 # Swish@1.0 to start
-                               norm_layer=norm_layer, drop_path=dpr[i],
-                               layerscale_init=1e-5)
+                            mlp_ratio=mlp_ratio,
+                            ff_dropout=dropout, attn_dropout=dropout,
+                            conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
+                            conv_expansion=1.0,                 # Swish@1.0 to start
+                            norm_layer=norm_layer, drop_path=dpr[i],
+                            layerscale_init=1e-5)
             for i in range(depth)
         ])
 
@@ -506,10 +488,6 @@ class MaskedAutoencoderViT(nn.Module):
             return super().load_state_dict(upgraded, strict=False)
 
     # ---- MMS helpers ----
-    # ---------------------------
-    # 1-D Multiple Masking
-    # ---------------------------
-
     def _mask_random_1d(self, B: int, L: int, ratio: float, device) -> torch.Tensor:
         """Random token masking on 1-D sequence. Returns bool [B, L], True = masked."""
         if ratio <= 0.0 or ratio > 1.0:
@@ -555,55 +533,6 @@ class MaskedAutoencoderViT(nn.Module):
                     break
         return mask
 
-    def _mask_span_1d(self, B: int, L: int, ratio: float, max_span: int, device) -> torch.Tensor:
-        """
-        Span masking in 1-D (YOUR OLD SEMANTICS, but robust):
-        - place contiguous spans of random length s ∈ [1, max_span]
-        - enforce an Algorithm-1-like spacing policy via k depending on ratio
-        - continue until ~ratio*L tokens are covered
-        Returns bool [B, L], True = masked.
-        """
-        if ratio <= 0.0:
-            return torch.zeros(B, L, dtype=torch.bool, device=device)
-
-        L = int(L)
-        max_span = int(max(1, min(max_span, L)))
-        target = int(round(ratio * L))
-        mask = torch.zeros(B, L, dtype=torch.bool, device=device)
-
-        # spacing policy similar to Alg.1 (adapted to 1-D)
-        def spacing_for(R):
-            if R <= 0.4:
-                # use k = span length (separates spans when ratio small)
-                return None
-            elif R <= 0.7:
-                return 1
-            else:
-                return 0
-        fixed_k = spacing_for(ratio)
-
-        for b in range(B):
-            used = torch.zeros(L, dtype=torch.bool, device=device)
-            covered = int(used.sum().item())
-            for _ in range(10000):
-                if covered >= target:
-                    break
-                s = random.randint(1, max_span)
-                if s > L:
-                    s = L
-                l = random.randint(0, L - s)
-                r = l + s - 1
-                k = s if fixed_k is None else fixed_k
-                # check spacing neighborhood
-                left_ok = (l - k) < 0 or not used[max(0, l - k):l].any()
-                right_ok = (
-                    r + 1) >= L or not used[r+1:min(L, r + 1 + k)].any()
-                if left_ok and right_ok:
-                    used[l:r+1] = True
-                    covered = int(used.sum().item())
-            mask[b] = used
-        return mask
-
     def _mask_span_old_1d(self, B: int, L: int, ratio: float, max_span: int, device) -> torch.Tensor:
         if ratio <= 0.0 or max_span <= 0 or L <= 0:
             return torch.zeros(B, L, dtype=torch.bool, device=device)
@@ -620,16 +549,6 @@ class MaskedAutoencoderViT(nn.Module):
             start = torch.randint(0, L - s + 1, (1,), device=device).item()
             mask[:, start:start + s] = True    # same start for the whole batch
 
-        return mask
-
-    def generate_span_mask(self, x, mask_ratio, max_span_length):
-        N, L, D = x.shape  # batch, length, dim
-        mask = torch.ones(N, L, 1).to(x.device)
-        span_length = int(L * mask_ratio)
-        num_spans = span_length // max_span_length
-        for i in range(num_spans):
-            idx = torch.randint(L - max_span_length, (1,))
-            mask[:, idx:idx + max_span_length, :] = 0
         return mask
 
     # inside MaskedAutoencoderViT.forward_features(...)
@@ -654,7 +573,7 @@ class MaskedAutoencoderViT(nn.Module):
             else:
                 keep = (~self._mask_span_old_1d(B, x.size(1), mask_ratio,
                         max_span_length, x.device)).float().unsqueeze(-1)
-
+            x = keep * x + (1.0 - keep) * self.mask_token.expand(x.size(0), x.size(1), x.size(2))
         # Relative positional encoding is applied inside Attention; no absolute PE added here
 
         skip_hi = None
