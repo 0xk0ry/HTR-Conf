@@ -150,7 +150,7 @@ def get_args_parser():
                         help='SGM loss weight (λ2 in the paper)')
     parser.add_argument('--ctc-lambda', default=0.1, type=float,
                         help='CTC loss weight (λ1 in the paper)')
-    parser.add_argument('--sgm-sub-len', default=3, type=int,
+    parser.add_argument('--sgm-sub-len', default=5, type=int,
                         help='SGM context sub-string length')
     parser.add_argument('--sgm-warmup-iters', default=0,
                         type=int, help='SGM warmup iters, 0 = start immediately')
