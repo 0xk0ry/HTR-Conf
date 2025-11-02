@@ -57,6 +57,18 @@ def get_args_parser():
     parser.add_argument('--proj', default=8, type=float,
                         help='projection value')
 
+    # Masking strategy controls
+    parser.add_argument('--r-rand', dest='r_rand', default=0.6, type=float,
+                        help='Ratio for random masking in tri-masking schedule')
+    parser.add_argument('--r-block', dest='r_block', default=0.6, type=float,
+                        help='Ratio for block masking in tri-masking schedule')
+    parser.add_argument('--block-span', dest='block_span', default=4, type=int,
+                        help='Block span length for block masking')
+    parser.add_argument('--r-span', dest='r_span', default=0.4, type=float,
+                        help='Ratio for span masking in tri-masking schedule')
+    parser.add_argument('--max-span', dest='max_span', default=8, type=int,
+                        help='Max span length for span masking')
+
     parser.add_argument('--dpi-min-factor', default=0.5, type=float)
     parser.add_argument('--dpi-max-factor', default=1.5, type=float)
     parser.add_argument('--perspective-low', default=0., type=float)
