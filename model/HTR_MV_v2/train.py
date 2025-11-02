@@ -67,11 +67,25 @@ def compute_losses(
     if sgm_head is not None and feats is not None:
         left_ctx, right_ctx, tgt_ids, tgt_mask = pre_sgm_ctx if pre_sgm_ctx is not None else make_context_batch(
             texts, stoi, sub_str_len=args.sgm_sub_len, device=image.device)
+        # Map visual mask (vis_mask: [B, N]) to target positions (tgt_mask: [B, L])
+        if vis_mask is not None:
+            # vis_mask may have shape [B, N]; tgt_mask is [B, L]
+            B_v, N_v = vis_mask.shape
+            B_t, L_t = tgt_mask.shape
+            if N_v != L_t:
+                # linearly sample N_v positions to produce L_t entries
+                idx = torch.linspace(0, N_v - 1, steps=L_t, device=vis_mask.device).long()
+                focus_mask = vis_mask[:, idx]
+            else:
+                focus_mask = vis_mask
+        else:
+            focus_mask = None
+
         out = sgm_head(
             feats,
             left_ctx, right_ctx,
             tgt_ids, tgt_mask,
-            focus_mask=vis_mask  # [B, L] float mask: 1 where visual tokens were masked
+            focus_mask=focus_mask  # [B, L] float mask: 1 where visual tokens were masked (mapped)
         )
         loss_sgm = out['loss_sgm']
 
