@@ -18,7 +18,7 @@ import re
 import importlib
 from model.sgm_head import SGMHead, build_sgm_vocab, make_context_batch
 import wandb
-from contextlib import nullcontext
+ 
 
 
 def compute_losses(
@@ -245,14 +245,7 @@ def main():
     avg_loss_ctc = 0.0
     avg_loss_sgm = 0.0
 
-    # AMP setup (new API)
-    use_amp = bool(getattr(args, 'amp', False)) and torch.cuda.is_available()
-    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
-    def amp_ctx():
-        return torch.amp.autocast(device_type='cuda') if use_amp else nullcontext()
-
-    # Gradient clipping configuration
-    clip_grad = float(getattr(args, 'clip_grad', 1.0))
+    # Pure FP32 training (AMP and grad clipping removed by request)
 
     for nb_iter in range(start_iter, args.total_iter):
 
@@ -273,47 +266,19 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            with amp_ctx():
-                loss, loss_ctc, loss_sgm = tri_masked_loss(
-                    args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-                    nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-                )
-            # scale loss to average over accum steps
-            scaler.scale(loss / accum_steps).backward()
+            loss, loss_ctc, loss_sgm = tri_masked_loss(
+                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+            )
+            # average over accum steps
+            (loss / accum_steps).backward()
             total_loss_this_macro += loss.item()
             avg_loss_ctc += loss_ctc.mean().item()
             avg_loss_sgm += loss_sgm.mean().item()
 
-        # SAM first step after accumulating all gradients (unscale + clip + check)
-        if use_amp:
-            scaler.unscale_(optimizer)
-        if clip_grad and clip_grad > 0:
-            try:
-                torch.nn.utils.clip_grad_norm_(param_groups, max_norm=clip_grad)
-            except Exception:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-        # Non-finite check
-        non_finite = False
-        for p in model.parameters():
-            if p.grad is not None and not torch.isfinite(p.grad).all():
-                non_finite = True
-                break
-        if sgm_head is not None and not non_finite:
-            for p in sgm_head.parameters():
-                if p.grad is not None and not torch.isfinite(p.grad).all():
-                    non_finite = True
-                    break
-        if non_finite:
-            logger.warning(f"Non-finite grads detected before SAM first_step at iter {nb_iter}; skipping update and reducing scale")
-            optimizer.zero_grad(set_to_none=True)
-            if use_amp:
-                scaler.update()
-            continue
+        # SAM first step after accumulating all gradients
         optimizer.first_step(zero_grad=True)
-        # Allow another unscale_ call prior to second step on some PyTorch builds
-        if use_amp:
-            scaler.update()
 
         # Recompute with perturbed weights and accumulate again for the second step
         for micro_step in range(accum_steps):
@@ -322,41 +287,15 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            with amp_ctx():
-                loss2, _, _ = tri_masked_loss(
-                    args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-                    nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
-                )
-            scaler.scale(loss2 / accum_steps).backward()
+            loss2, _, _ = tri_masked_loss(
+                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                nb_iter, ctc_lambda, sgm_lambda, stoi,
+                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+            )
+            (loss2 / accum_steps).backward()
 
-        # Unscale before second step; clip + non-finite check; update scaler once per macro-step
-        if use_amp:
-            scaler.unscale_(optimizer)
-        if clip_grad and clip_grad > 0:
-            try:
-                torch.nn.utils.clip_grad_norm_(param_groups, max_norm=clip_grad)
-            except Exception:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-        non_finite = False
-        for p in model.parameters():
-            if p.grad is not None and not torch.isfinite(p.grad).all():
-                non_finite = True
-                break
-        if sgm_head is not None and not non_finite:
-            for p in sgm_head.parameters():
-                if p.grad is not None and not torch.isfinite(p.grad).all():
-                    non_finite = True
-                    break
-        if non_finite:
-            logger.warning(f"Non-finite grads detected before SAM second_step at iter {nb_iter}; skipping update and reducing scale")
-            optimizer.zero_grad(set_to_none=True)
-            if use_amp:
-                scaler.update()
-            continue
+        # SAM second step
         optimizer.second_step(zero_grad=True)
-        if use_amp:
-            scaler.update()
 
         model.zero_grad()
         # Update EMA once per macro-iteration (after one optimizer step)

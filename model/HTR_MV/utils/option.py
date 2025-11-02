@@ -12,8 +12,6 @@ def get_args_parser():
                         help='Path to checkpoint_{cer}_{wer}_{iter}.pth to resume from')
     parser.add_argument('--train-bs', default=8,
                         type=int, help='train batch size')
-    parser.add_argument('--clip-grad', type=float, default=1.0,
-                        help='Gradient clipping max norm; set <=0 to disable')
     parser.add_argument('--accum-steps', default=1, type=int,
                         help='gradient accumulation steps. Effective batch size = train-bs * accum-steps')
     parser.add_argument('--val-bs', default=1, type=int,
@@ -42,8 +40,6 @@ def get_args_parser():
                         help='seed for initializing training. ')
 
     # Performance toggles
-    parser.add_argument('--amp', action='store_true', default=False,
-                        help='Enable automatic mixed precision (CUDA autocast + GradScaler)')
     parser.add_argument(
         '--img-size', default=[512, 64], type=int, nargs='+', help='image size')
     parser.add_argument('--attn-mask-ratio', default=0.,
