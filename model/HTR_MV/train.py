@@ -37,6 +37,7 @@ def compute_losses(
     mask_ratio=0.30,
     block_span=4,
     max_span_length=8,
+    pre_sgm_ctx=None
 ):
     # 1) Forward
     if sgm_head is None or nb_iter < args.sgm_warmup_iters:
@@ -63,8 +64,8 @@ def compute_losses(
 
     loss_sgm = torch.zeros((), device=preds.device)
     if sgm_head is not None and feats is not None:
-        left_ctx, right_ctx, tgt_ids, tgt_mask = make_context_batch(
-            texts, stoi, sub_str_len=args.sgm_sub_len, device=preds.device)
+        left_ctx, right_ctx, tgt_ids, tgt_mask = pre_sgm_ctx if pre_sgm_ctx is not None else make_context_batch(
+            texts, stoi, sub_str_len=args.sgm_sub_len, device=image.device)
         out = sgm_head(feats, left_ctx, right_ctx, tgt_ids, tgt_mask)
         loss_sgm = out['loss_sgm']
 
@@ -88,7 +89,8 @@ def tri_masked_loss(args, model, sgm_head, image, labels, batch_size,
         loss, loss_ctc, loss_sgm = compute_losses(
             args, model, sgm_head, image, labels, batch_size, criterion, converter,
             nb_iter, ctc_lambda, sgm_lambda, stoi,
-            mask_mode=mode, mask_ratio=ratio, block_span=block_span, max_span_length=max_span
+            mask_mode=mode, mask_ratio=ratio, block_span=block_span, max_span_length=max_span,
+            pre_sgm_ctx=pre_sgm_ctx
         )
         total += loss
         total_ctc += loss_ctc
@@ -282,10 +284,10 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            loss2, _, _ = tri_masked_loss(
+            loss2, _, _ = compute_losses(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+                mask_mode='span', mask_ratio=0.6, block_span=4, max_span_length=8
             )
             (loss2 / accum_steps).backward()
 
