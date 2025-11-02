@@ -413,10 +413,10 @@ class MaskedAutoencoderViT(nn.Module):
 
         return self.norm(x)
 
-    def forward(self, x, use_masking=False, return_features=False, mask_mode="span", mask_ratio=None, max_span_length=None):
+    def forward(self, x, use_masking=False, return_features=False, mask_mode="span", mask_ratio=None, block_span=None, max_span_length=None):
         feats = self.forward_features(
             # [B, N, D]
-            x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio, max_span_length=max_span_length)
+            x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio, block_span=block_span, max_span_length=max_span_length)
         logits = self.head(feats)               # [B, N, nb_cls]  → CTC
         if return_features:
             return logits, feats
