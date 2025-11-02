@@ -115,28 +115,16 @@ def main():
     logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
     writer = SummaryWriter(args.save_dir)
 
-    wandb.login(key="ed105d007421b1bb62cf29a2ec6a9a6998876a29")
-    wandb.init(
-        project="HTR_backbone",
-        name=args.exp_name,
-        config=vars(args),
-        dir=args.save_dir
-    )
-
-    # Optional performance toggles
-    if torch.cuda.is_available() and getattr(args, 'cudnn_benchmark', False):
-        torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True
 
     model = HTR_VT.create_model(
-        nb_cls=args.nb_cls, img_size=args.img_size[::-1], channels_last=getattr(args, 'channels_last', False))
+        nb_cls=args.nb_cls, img_size=args.img_size[::-1])
 
     total_param = sum(p.numel() for p in model.parameters())
     logger.info('total_param is {}'.format(total_param))
 
     model.train()
     model = model.cuda()
-    if getattr(args, 'channels_last', False):
-        model.to(memory_format=torch.channels_last)
     # Ensure EMA decay is properly accessed (handle both ema_decay and ema-decay)
     ema_decay = getattr(args, 'ema_decay', 0.9999)
     logger.info(f"Using EMA decay: {ema_decay}")
@@ -264,8 +252,6 @@ def main():
             # cache CPU tensors and labels for SAM second pass
             cached_batches.append(batch)
             image = batch[0].cuda(non_blocking=True)
-            if getattr(args, 'channels_last', False):
-                image = image.to(memory_format=torch.channels_last)
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
@@ -289,8 +275,6 @@ def main():
         for micro_step in range(accum_steps):
             batch = cached_batches[micro_step]
             image = batch[0].cuda(non_blocking=True)
-            if getattr(args, 'channels_last', False):
-                image = image.to(memory_format=torch.channels_last)
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
