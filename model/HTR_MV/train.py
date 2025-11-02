@@ -43,7 +43,7 @@ def compute_losses(
     # 1) Forward
     if sgm_head is None or nb_iter < args.sgm_warmup_iters:
         preds = model(image, use_masking=use_masking, mask_mode=mask_mode,
-                      mask_ratio=mask_ratio, max_span_length=max_span_length)
+                      mask_ratio=mask_ratio, block_span=block_span, max_span_length=max_span_length)
         feats = None
     else:
         preds, feats = model(
@@ -268,7 +268,11 @@ def main():
                 loss, loss_ctc, loss_sgm = tri_masked_loss(
                     args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                     nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
+                    r_rand=args.r_rand,
+                    r_block=args.r_block,
+                    block_span=args.block_span,
+                    r_span=args.r_span,
+                    max_span=args.max_span
                 )
             else:
                 loss, loss_ctc, loss_sgm = compute_losses(
@@ -295,7 +299,11 @@ def main():
                 loss2, loss_ctc, loss_sgm = tri_masked_loss(
                     args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                     nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
+                    r_rand=args.r_rand,
+                    r_block=args.r_block,
+                    block_span=args.block_span,
+                    r_span=args.r_span,
+                    max_span=args.max_span
                 )
             else:
                 loss2, loss_ctc, loss_sgm = compute_losses(
