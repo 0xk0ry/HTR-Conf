@@ -157,4 +157,6 @@ def get_args_parser():
     # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph)
     parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie'],
                         help='Language setting: eng uses dynamic alphabet, vie uses predefined Vietnamese ralph')
+    parser.add_argument('--use-masking', action='store_true', default=False,
+                        help='whether to use masking strategy during training')
     return parser.parse_args()

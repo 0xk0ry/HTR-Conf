@@ -37,17 +37,18 @@ def compute_losses(
     mask_ratio=0.30,
     block_span=4,
     max_span_length=8,
-    pre_sgm_ctx=None
+    pre_sgm_ctx=None,
+    use_masking=True,
 ):
     # 1) Forward
     if sgm_head is None or nb_iter < args.sgm_warmup_iters:
-        preds = model(image, use_masking=True, mask_mode=mask_mode,
+        preds = model(image, use_masking=use_masking, mask_mode=mask_mode,
                       mask_ratio=mask_ratio, max_span_length=max_span_length)
         feats = None
     else:
         preds, feats, vis_mask = model(
             image,
-            use_masking=True,
+            use_masking=use_masking,
             return_features=True,
             return_mask=True,
             mask_mode=mask_mode,
@@ -282,12 +283,17 @@ def main():
             image = batch[0].cuda(non_blocking=True)
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
-
-            loss, loss_ctc, loss_sgm = tri_masked_loss(
-                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-                nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
-            )
+            if args.use_masking:
+                loss, loss_ctc, loss_sgm = tri_masked_loss(
+                    args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                    nb_iter, ctc_lambda, sgm_lambda, stoi,
+                    r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
+                )
+            else:
+                loss, loss_ctc, loss_sgm = compute_losses(
+                    args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                    nb_iter, ctc_lambda, sgm_lambda, stoi, use_masking=False
+                )
             # average over accum steps
             (loss / accum_steps).backward()
             total_loss_this_macro += loss.item()
@@ -303,12 +309,17 @@ def main():
             image = batch[0].cuda(non_blocking=True)
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
-
-            loss2, _, _ = tri_masked_loss(
-                args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
-                nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
-            )
+            if args.use_masking:
+                loss2, loss_ctc, loss_sgm = tri_masked_loss(
+                    args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                    nb_iter, ctc_lambda, sgm_lambda, stoi,
+                    r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
+                )
+            else:
+                loss2, loss_ctc, loss_sgm = compute_losses(
+                    args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
+                    nb_iter, ctc_lambda, sgm_lambda, stoi, use_masking=False
+                )
             (loss2 / accum_steps).backward()
 
         # SAM second step
