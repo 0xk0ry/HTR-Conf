@@ -245,10 +245,11 @@ def main():
     avg_loss_ctc = 0.0
     avg_loss_sgm = 0.0
 
-    # AMP setup
+    # AMP setup (new API)
     use_amp = bool(getattr(args, 'amp', False)) and torch.cuda.is_available()
     scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
-    amp_ctx = torch.cuda.amp.autocast if use_amp else nullcontext
+    def amp_ctx():
+        return torch.amp.autocast(device_type='cuda') if use_amp else nullcontext()
 
     for nb_iter in range(start_iter, args.total_iter):
 
@@ -282,8 +283,12 @@ def main():
             avg_loss_sgm += loss_sgm.mean().item()
 
         # SAM first step after accumulating all gradients (unscale before stepping)
-        scaler.unscale_(optimizer)
+        if use_amp:
+            scaler.unscale_(optimizer)
         optimizer.first_step(zero_grad=True)
+        # Allow another unscale_ call prior to second step on some PyTorch builds
+        if use_amp:
+            scaler.update()
 
         # Recompute with perturbed weights and accumulate again for the second step
         for micro_step in range(accum_steps):
@@ -292,7 +297,7 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            with (amp_ctx() if use_amp else nullcontext()):
+            with amp_ctx():
                 loss2, _, _ = tri_masked_loss(
                     args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                     nb_iter, ctc_lambda, sgm_lambda, stoi,
@@ -301,9 +306,11 @@ def main():
             scaler.scale(loss2 / accum_steps).backward()
 
         # Unscale before second step; update scaler once per macro-step
-        scaler.unscale_(optimizer)
+        if use_amp:
+            scaler.unscale_(optimizer)
         optimizer.second_step(zero_grad=True)
-        scaler.update()
+        if use_amp:
+            scaler.update()
 
         model.zero_grad()
         # Update EMA once per macro-iteration (after one optimizer step)

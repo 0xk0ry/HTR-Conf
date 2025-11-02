@@ -368,13 +368,10 @@ class MaskedAutoencoderViT(nn.Module):
 
         if use_masking:
             if mask_mode == "random":
-                # random mask returns [B, L] -> make [B, L, 1]
                 mask = self.mask_random_1d(x, mask_ratio).float().unsqueeze(-1)
             elif mask_mode in ("block"):
-                # block mask already returns [B, L, 1]
                 mask = self.mask_block_1d(x, mask_ratio, max_span_length).float()
             elif mask_mode in ("span"):
-                # span mask already returns [B, L, 1]
                 mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
             else:
                 warnings.warn(f"Unknown mask_mode '{mask_mode}', defaulting to span.")
