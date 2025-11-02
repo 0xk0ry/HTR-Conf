@@ -115,6 +115,20 @@ def main():
     logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
     writer = SummaryWriter(args.save_dir)
 
+    # Initialize wandb only if enabled
+    if getattr(args, 'use_wandb', False):
+        try:
+            wandb = importlib.import_module('wandb')
+            wandb.init(project=getattr(args, 'wandb_project', 'None'), name=args.exp_name,
+                       config=vars(args), dir=args.save_dir)
+            logger.info("Weights & Biases logging enabled")
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize wandb: {e}. Continuing without wandb.")
+            wandb = None
+    else:
+        wandb = None
+
     torch.backends.cudnn.benchmark = True
 
     model = HTR_VT.create_model(
