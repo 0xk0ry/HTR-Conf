@@ -29,6 +29,7 @@ class RelativePositionBias1D(nn.Module):
         bias = self.bias(rel)
         return bias.permute(2, 0, 1).unsqueeze(0)
 
+
 class Attention(nn.Module):
     def __init__(self, dim, num_patches, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -209,11 +210,6 @@ class SqueezeformerBlock(nn.Module):
 
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size):
-    """
-    grid_size: int of the grid height and width
-    return:
-    pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
-    """
     grid_h = np.arange(grid_size[0], dtype=np.float32)
     grid_w = np.arange(grid_size[1], dtype=np.float32)
     grid = np.meshgrid(grid_w, grid_h)  # here w goes first
@@ -227,13 +223,12 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size):
 def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     assert embed_dim % 2 == 0
 
-    # use half of dimensions to encode grid_h
     emb_h = get_1d_sincos_pos_embed_from_grid(
-        embed_dim // 2, grid[0])  # (H*W, D/2)
+        embed_dim // 2, grid[0])
     emb_w = get_1d_sincos_pos_embed_from_grid(
-        embed_dim // 2, grid[1])  # (H*W, D/2)
+        embed_dim // 2, grid[1])
 
-    emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
+    emb = np.concatenate([emb_h, emb_w], axis=1)
     return emb
 
 
@@ -274,7 +269,6 @@ class MaskedAutoencoderViT(nn.Module):
         conv_kernel_size: int = 3,
         dropout: float = 0.1,
         drop_path: float = 0.1,
-        temporal_unet: bool = True,
         down_after: int = 2,
         up_after: int = 4,
         ds_kernel: int = 3,
@@ -303,12 +297,10 @@ class MaskedAutoencoderViT(nn.Module):
 
         self.norm = norm_layer(embed_dim, elementwise_affine=True)
         self.head = torch.nn.Linear(embed_dim, nb_cls)
-        self.temporal_unet = temporal_unet
         self.down_after = down_after
         self.up_after = up_after
-        if self.temporal_unet:
-            self.down1 = Downsample1D(embed_dim, kernel_size=ds_kernel)
-            self.up1 = Upsample1D(embed_dim, mode=upsample_mode)
+        self.down1 = Downsample1D(embed_dim, kernel_size=ds_kernel)
+        self.up1 = Upsample1D(embed_dim, mode=upsample_mode)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -337,30 +329,55 @@ class MaskedAutoencoderViT(nn.Module):
         mask.scatter_(1, idx, False)
         return mask
 
-    def mask_block_1d(self, x, ratio, max_block_length):
-        B, L, D = x.shape
-        mask = torch.ones(B, L, 1).to(x.device)
-        block_length = int(L * ratio)
-        num_blocks = block_length // max_block_length
-        for i in range(num_blocks):
-            idx = torch.randint(L - max_block_length, (1,))
-            block_length = torch.randint(1, max_block_length, (1,))
-            mask[:, idx:idx + block_length, :] = 0
-        return mask
+    def mask_block_1d(self, x, ratio: float, max_block_length: int):
+        B, L, _ = x.shape
+        device = x.device
 
-    def mask_span_1d(self, x, ratio, max_span_length):
-        B, L, D = x.shape
-        mask = torch.ones(B, L, 1).to(x.device)
-        span_length = int(L * ratio)
-        num_spans = span_length // max_span_length
-        for i in range(num_spans):
-            idx = torch.randint(L - max_span_length, (1,))
-            mask[:, idx:idx + max_span_length, :] = 0
-        return mask
+        if ratio <= 0.0:
+            return torch.ones(B, L, 1, dtype=torch.bool, device=device)
+        if ratio >= 1.0:
+            return torch.zeros(B, L, 1, dtype=torch.bool, device=device)
+
+        target_mask_tokens = int(round(ratio * L))
+        K = target_mask_tokens // max_block_length
+        K = max(K, 1)
+        starts = torch.randint(0, max(1, L - max_block_length + 1), (B, K), device=device)
+        lengths = torch.randint(1, max_block_length + 1, (B, K), device=device)
+        positions = torch.arange(L, device=device).view(1, 1, L)
+        starts_exp = starts.unsqueeze(-1)
+        ends_exp = (starts + lengths).unsqueeze(-1).clamp(max=L)
+        blocks_mask = (positions >= starts_exp) & (positions < ends_exp)
+        masked_any = blocks_mask.any(dim=1)
+        keep_mask = ~masked_any
+        return keep_mask.unsqueeze(-1)
+
+
+    def mask_span_1d(self, x, ratio: float, max_span_length: int):
+        B, L, _ = x.shape
+        device = x.device
+
+        if ratio <= 0.0:
+            return torch.ones(B, L, 1, dtype=torch.bool, device=device)
+        if ratio >= 1.0:
+            return torch.zeros(B, L, 1, dtype=torch.bool, device=device)
+
+        target_mask_tokens = int(round(ratio * L))
+        K = target_mask_tokens // max_span_length
+        K = max(K, 1)
+        starts = torch.randint(0, max(1, L - max_span_length + 1), (B, K), device=device)
+        lengths = torch.full((B, K), max_span_length, device=device)
+        positions = torch.arange(L, device=device).view(1, 1, L)
+        starts_exp = starts.unsqueeze(-1)
+        ends_exp = (starts + lengths).unsqueeze(-1).clamp(max=L)
+        spans_mask = (positions >= starts_exp) & (positions < ends_exp)  # [B, K, L]
+        masked_any = spans_mask.any(dim=1)  # [B, L]
+        keep_mask = ~masked_any
+        return keep_mask.unsqueeze(-1)
+
 
     def forward_features(self, x, use_masking=False,
                          mask_mode="span",
-                         mask_ratio=0.5, max_span_length=8):
+                         mask_ratio=0.5, block_span=4, max_span_length=8):
         x = self.patch_embed(x)
         B, C, W, H = x.shape
         assert C == self.embed_dim, f"Expected embed_dim {self.embed_dim}, got {C}"
@@ -370,22 +387,26 @@ class MaskedAutoencoderViT(nn.Module):
             if mask_mode == "random":
                 mask = self.mask_random_1d(x, mask_ratio).float().unsqueeze(-1)
             elif mask_mode in ("block"):
-                mask = self.mask_block_1d(x, mask_ratio, max_span_length).float()
+                mask = self.mask_block_1d(x, mask_ratio, block_span).float()
             elif mask_mode in ("span"):
-                mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
+                mask = self.mask_span_1d(
+                    x, mask_ratio, max_span_length).float()
             else:
-                warnings.warn(f"Unknown mask_mode '{mask_mode}', defaulting to span.")
-                mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
-            x = mask * x + (1.0 - mask) * self.mask_token.expand(x.size(0), x.size(1), x.size(2))
+                warnings.warn(
+                    f"Unknown mask_mode '{mask_mode}', defaulting to span.")
+                mask = self.mask_span_1d(
+                    x, mask_ratio, max_span_length).float()
+            x = mask * x + (1.0 - mask) * \
+                self.mask_token.expand(x.size(0), x.size(1), x.size(2))
         skip_hi = None
         for i, blk in enumerate(self.blocks, 1):
             x = blk(x)
-            if self.temporal_unet and i == self.down_after:
+            if i == self.down_after:
                 skip_hi = x
                 if (x.size(1) % 2) == 1:
                     x = torch.cat([x, x[:, -1:, :]], dim=1)
                 x = self.down1(x)
-            if self.temporal_unet and i == self.up_after:
+            if i == self.up_after:
                 assert skip_hi is not None, "Upsample requires a stored skip."
                 x = self.up1(x, target_len=skip_hi.size(1))
                 x = x + skip_hi
@@ -413,9 +434,8 @@ def create_model(nb_cls, img_size, mlp_ratio=4, **kwargs):
         mlp_ratio=mlp_ratio,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         conv_kernel_size=7,
-        temporal_unet=True,      # enable #1
-        down_after=3,            # blocks 1-2 high-res
-        up_after=7,              # blocks 3-4 low-res
+        down_after=3,
+        up_after=7,
         ds_kernel=3,
         max_seq_len=128,
         upsample_mode='nearest',

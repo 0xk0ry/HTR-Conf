@@ -18,7 +18,6 @@ import re
 import importlib
 from model.sgm_head import SGMHead, build_sgm_vocab, make_context_batch
 import wandb
- 
 
 
 def compute_losses(
@@ -34,90 +33,68 @@ def compute_losses(
     ctc_lambda,
     sgm_lambda,
     stoi,
-    mask_mode='span_old',
+    mask_mode='span',
     mask_ratio=0.30,
+    block_span=4,
     max_span_length=8,
-    pre_encoded=None,
-    pre_sgm_ctx=None,
 ):
     # 1) Forward
-    if sgm_head is None or nb_iter < getattr(args, 'sgm_warmup_iters', 0):
+    if sgm_head is None or nb_iter < args.sgm_warmup_iters:
         preds = model(image, use_masking=True, mask_mode=mask_mode,
-                      # [B, N, V_ctc]
                       mask_ratio=mask_ratio, max_span_length=max_span_length)
         feats = None
     else:
-        # Updated call: removed outdated positional arguments (args.mask_ratio, args.max_span_length)
-        # to avoid passing multiple values for 'use_masking' (TypeError). Use keyword args instead.
         preds, feats = model(
             image,
             use_masking=True,
             return_features=True,
             mask_mode=mask_mode,
-            mask_ratio=mask_ratio if mask_ratio is not None else getattr(
-                args, 'mask_ratio', 0.0),
-            max_span_length=max_span_length if max_span_length is not None else getattr(
-                args, 'max_span_length', 0)
-        )   # [B, N, V_ctc], [B, N, D]
-
-    # 2) CTC loss (use pre-encoded labels if provided)
-    if pre_encoded is None:
-        text_ctc, length_ctc = converter.encode(texts)
-        text_ctc = text_ctc.to(preds.device)
-        length_ctc = length_ctc.to(preds.device)
-    else:
-        text_ctc, length_ctc = pre_encoded
-    preds_sz = torch.full((batch_size,), preds.size(1), dtype=torch.int32, device=preds.device)
+            mask_ratio=mask_ratio,
+            block_span=block_span,
+            max_span_length=max_span_length
+        )
+    text_ctc, length_ctc = converter.encode(texts)
+    text_ctc = text_ctc.to(preds.device)
+    length_ctc = length_ctc.to(preds.device)
+    preds_sz = torch.full((batch_size,), preds.size(
+        1), dtype=torch.int32, device=preds.device)
     loss_ctc = criterion_ctc(preds.permute(1, 0, 2).log_softmax(2),
                              text_ctc, preds_sz, length_ctc).mean()
 
-    # 3) SGM loss (optional)
     loss_sgm = torch.zeros((), device=preds.device)
     if sgm_head is not None and feats is not None:
-        if pre_sgm_ctx is None:
-            left_ctx, right_ctx, tgt_ids, tgt_mask = make_context_batch(
-                texts, stoi, sub_str_len=getattr(args, 'sgm_sub_len', 5), device=preds.device)
-        else:
-            left_ctx, right_ctx, tgt_ids, tgt_mask = pre_sgm_ctx
+        left_ctx, right_ctx, tgt_ids, tgt_mask = make_context_batch(
+            texts, stoi, sub_str_len=args.sgm_sub_len, device=preds.device)
         out = sgm_head(feats, left_ctx, right_ctx, tgt_ids, tgt_mask)
         loss_sgm = out['loss_sgm']
 
-    # 4) Combine with weights
     total = ctc_lambda * loss_ctc + sgm_lambda * loss_sgm
     return total, loss_ctc.detach(), loss_sgm.detach()
 
 
 def tri_masked_loss(args, model, sgm_head, image, labels, batch_size,
                     criterion, converter, nb_iter, ctc_lambda, sgm_lambda, stoi,
-                    r_rand=0.30, r_block=0.20, r_span=0.20, max_span=8):
+                    r_rand=0.6, r_block=0.6, block_span=4, r_span=0.4, max_span=8):
     total = 0.0
     total_ctc = 0.0
     total_sgm = 0.0
-    weights = {"random": 1.0, "block": 1.0, "span": 1.0}
     plans = [("random", r_rand), ("block", r_block), ("span", r_span)]
 
-    # Pre-encode labels once and create SGM context (if needed)
-    text_ctc, length_ctc = converter.encode(labels)
-    text_ctc = text_ctc.to(image.device)
-    length_ctc = length_ctc.to(image.device)
-    pre_sgm_ctx = None
-    if sgm_head is not None and nb_iter >= getattr(args, 'sgm_warmup_iters', 0):
+    if sgm_head is not None and nb_iter >= args.sgm_warmup_iters:
         pre_sgm_ctx = make_context_batch(
-            labels, stoi, sub_str_len=getattr(args, 'sgm_sub_len', 5), device=image.device)
+            labels, stoi, sub_str_len=args.sgm_sub_len, device=image.device)
 
     for mode, ratio in plans:
         loss, loss_ctc, loss_sgm = compute_losses(
             args, model, sgm_head, image, labels, batch_size, criterion, converter,
             nb_iter, ctc_lambda, sgm_lambda, stoi,
-            mask_mode=mode, mask_ratio=ratio, max_span_length=max_span,
-            pre_encoded=(text_ctc, length_ctc), pre_sgm_ctx=pre_sgm_ctx
+            mask_mode=mode, mask_ratio=ratio, block_span=block_span, max_span_length=max_span
         )
-        w = weights[mode]
-        total += w * loss
-        total_ctc += w * loss_ctc
-        total_sgm += w * loss_sgm
+        total += loss
+        total_ctc += loss_ctc
+        total_sgm += loss_sgm
 
-    denom = sum(weights.values())
+    denom = 3.0
     return total/denom, total_ctc/denom, total_sgm/denom
 
 
@@ -287,7 +264,7 @@ def main():
             loss, loss_ctc, loss_sgm = tri_masked_loss(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
-                r_rand=0.60, r_block=0.40, r_span=0.40, max_span=8
+                r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
             )
             # average over accum steps
             (loss / accum_steps).backward()
