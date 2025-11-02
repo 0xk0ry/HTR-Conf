@@ -85,8 +85,8 @@ def tri_masked_loss(args, model, sgm_head, image, labels, batch_size,
     total = 0.0
     total_ctc = 0.0
     total_sgm = 0.0
-    weights = {"random": 1.0, "block": 1.0, "span_old": 1.0}
-    plans = [("random", r_rand), ("block", r_block), ("span_old", r_span)]
+    weights = {"random": 1.0, "block": 1.0, "span": 1.0}
+    plans = [("random", r_rand), ("block", r_block), ("span", r_span)]
 
     for mode, ratio in plans:
         loss, loss_ctc, loss_sgm = compute_losses(
@@ -247,7 +247,7 @@ def main():
 
     # AMP setup
     use_amp = bool(getattr(args, 'amp', False)) and torch.cuda.is_available()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     amp_ctx = torch.cuda.amp.autocast if use_amp else nullcontext
 
     for nb_iter in range(start_iter, args.total_iter):
