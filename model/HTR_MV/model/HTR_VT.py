@@ -360,22 +360,65 @@ class MaskedAutoencoderViT(nn.Module):
 
     def forward_features(self, x, use_masking=False,
                          mask_mode="span",
-                         mask_ratio=0.5, max_span_length=8):
+                         mask_ratio=0.5, max_span_length=8,
+                         mask_plan=None, mask_ratios=None):
         x = self.patch_embed(x)
         B, C, W, H = x.shape
         assert C == self.embed_dim, f"Expected embed_dim {self.embed_dim}, got {C}"
         x = x.view(B, C, -1).permute(0, 2, 1)
 
         if use_masking:
-            if mask_mode == "random":
-                mask = self.mask_random_1d(x, mask_ratio).float().unsqueeze(-1)
-            elif mask_mode in ("block"):
-                mask = self.mask_block_1d(x, mask_ratio, max_span_length).float()
-            elif mask_mode in ("span"):
-                mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
+            # If a per-sample plan is provided, generate masks for each sample in the batch once
+            if mask_plan is not None:
+                if not isinstance(mask_plan, (list, tuple)):
+                    # Accept tensor of ints/strings as well
+                    try:
+                        mask_plan = list(mask_plan)
+                    except Exception:
+                        raise ValueError("mask_plan must be a list/tuple or 1D tensor-like of length B")
+                if len(mask_plan) != B:
+                    raise ValueError(f"mask_plan length {len(mask_plan)} must equal batch size {B}")
+                # Prepare ratios, defaulting to mask_ratio if not provided
+                if mask_ratios is None:
+                    mask_ratios = [mask_ratio for _ in range(B)]
+                if not isinstance(mask_ratios, (list, tuple)):
+                    try:
+                        mask_ratios = list(mask_ratios)
+                    except Exception:
+                        raise ValueError("mask_ratios must be a list/tuple or 1D tensor-like of length B")
+                if len(mask_ratios) != B:
+                    raise ValueError(f"mask_ratios length {len(mask_ratios)} must equal batch size {B}")
+
+                mask = torch.ones(B, x.size(1), 1, device=x.device, dtype=x.dtype)
+
+                # Group indices by mode
+                modes = [str(m) for m in mask_plan]
+                for mode_name in ("random", "block", "span"):
+                    idx = [i for i, m in enumerate(modes) if (m == mode_name)]
+                    if len(idx) == 0:
+                        continue
+                    idx_tensor = torch.as_tensor(idx, device=x.device, dtype=torch.long)
+                    x_sub = x.index_select(0, idx_tensor)
+                    # Assume uniform ratio within a group (as used by tri-mask plan)
+                    r = float(mask_ratios[idx[0]])
+                    if mode_name == "random":
+                        m_sub = self.mask_random_1d(x_sub, r).float().unsqueeze(-1)
+                    elif mode_name == "block":
+                        m_sub = self.mask_block_1d(x_sub, r, max_span_length).float()
+                    else:  # span
+                        m_sub = self.mask_span_1d(x_sub, r, max_span_length).float()
+                    # Scatter back
+                    mask.index_copy_(0, idx_tensor, m_sub)
             else:
-                warnings.warn(f"Unknown mask_mode '{mask_mode}', defaulting to span.")
-                mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
+                if mask_mode == "random":
+                    mask = self.mask_random_1d(x, mask_ratio).float().unsqueeze(-1)
+                elif mask_mode in ("block"):
+                    mask = self.mask_block_1d(x, mask_ratio, max_span_length).float()
+                elif mask_mode in ("span"):
+                    mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
+                else:
+                    warnings.warn(f"Unknown mask_mode '{mask_mode}', defaulting to span.")
+                    mask = self.mask_span_1d(x, mask_ratio, max_span_length).float()
             x = mask * x + (1.0 - mask) * self.mask_token.expand(x.size(0), x.size(1), x.size(2))
         skip_hi = None
         for i, blk in enumerate(self.blocks, 1):
@@ -392,10 +435,13 @@ class MaskedAutoencoderViT(nn.Module):
 
         return self.norm(x)
 
-    def forward(self, x, use_masking=False, return_features=False, mask_mode="span", mask_ratio=None, max_span_length=None):
+    def forward(self, x, use_masking=False, return_features=False,
+                mask_mode="span", mask_ratio=None, max_span_length=None,
+                mask_plan=None, mask_ratios=None):
         feats = self.forward_features(
             # [B, N, D]
-            x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio, max_span_length=max_span_length)
+            x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio,
+            max_span_length=max_span_length, mask_plan=mask_plan, mask_ratios=mask_ratios)
         logits = self.head(feats)               # [B, N, nb_cls]  → CTC
         if return_features:
             return logits, feats

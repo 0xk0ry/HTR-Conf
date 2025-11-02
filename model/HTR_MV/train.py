@@ -90,35 +90,94 @@ def compute_losses(
 def tri_masked_loss(args, model, sgm_head, image, labels, batch_size,
                     criterion, converter, nb_iter, ctc_lambda, sgm_lambda, stoi,
                     r_rand=0.30, r_block=0.20, r_span=0.20, max_span=8):
-    total = 0.0
-    total_ctc = 0.0
-    total_sgm = 0.0
+    """One-pass concatenation: do a single forward over 3× batch with per-sample masks.
+
+    Keeps math identical to averaging the three modes, but reduces framework overhead
+    and enables better kernel fusion.
+    """
+    device = image.device
+    B = batch_size
     weights = {"random": 1.0, "block": 1.0, "span": 1.0}
-    plans = [("random", r_rand), ("block", r_block), ("span", r_span)]
+    modes_seq = ["random"] * B + ["block"] * B + ["span"] * B
+    ratios_seq = [r_rand] * B + [r_block] * B + [r_span] * B
 
-    # Pre-encode labels once and create SGM context (if needed)
+    # Build 3× concatenated batch
+    image_cat = torch.cat([image, image, image], dim=0)
+
+    # Pre-encode labels once
     text_ctc, length_ctc = converter.encode(labels)
-    text_ctc = text_ctc.to(image.device)
-    length_ctc = length_ctc.to(image.device)
+    text_ctc = text_ctc.to(device)
+    length_ctc = length_ctc.to(device)
+
+    # Precompute SGM context if enabled
     pre_sgm_ctx = None
-    if sgm_head is not None and nb_iter >= getattr(args, 'sgm_warmup_iters', 0):
+    need_sgm = (sgm_head is not None) and (nb_iter >= getattr(args, 'sgm_warmup_iters', 0))
+    if need_sgm:
         pre_sgm_ctx = make_context_batch(
-            labels, stoi, sub_str_len=getattr(args, 'sgm_sub_len', 5), device=image.device)
+            labels, stoi, sub_str_len=getattr(args, 'sgm_sub_len', 5), device=device)
 
-    for mode, ratio in plans:
-        loss, loss_ctc, loss_sgm = compute_losses(
-            args, model, sgm_head, image, labels, batch_size, criterion, converter,
-            nb_iter, ctc_lambda, sgm_lambda, stoi,
-            mask_mode=mode, mask_ratio=ratio, max_span_length=max_span,
-            pre_encoded=(text_ctc, length_ctc), pre_sgm_ctx=pre_sgm_ctx
+    # Forward once with per-sample mask plan
+    if need_sgm:
+        preds_cat, feats_cat = model(
+            image_cat,
+            use_masking=True,
+            return_features=True,
+            mask_plan=modes_seq,
+            mask_ratios=ratios_seq,
+            max_span_length=max_span,
         )
-        w = weights[mode]
-        total += w * loss
-        total_ctc += w * loss_ctc
-        total_sgm += w * loss_sgm
+    else:
+        preds_cat = model(
+            image_cat,
+            use_masking=True,
+            mask_plan=modes_seq,
+            mask_ratios=ratios_seq,
+            max_span_length=max_span,
+        )
+        feats_cat = None
 
+    # Split into three chunks
+    preds_r, preds_b, preds_s = preds_cat.split(B, dim=0)
+    feats_r = feats_b = feats_s = None
+    if feats_cat is not None:
+        feats_r, feats_b, feats_s = feats_cat.split(B, dim=0)
+
+    # Compute CTC losses for each chunk
+    N = preds_cat.size(1)
+    preds_sz = torch.full((B,), N, dtype=torch.int32, device=device)
+
+    def ctc_loss_for(preds_chunk):
+        return criterion(preds_chunk.permute(1, 0, 2).log_softmax(2),
+                         text_ctc, preds_sz, length_ctc).mean()
+
+    loss_ctc_r = ctc_loss_for(preds_r)
+    loss_ctc_b = ctc_loss_for(preds_b)
+    loss_ctc_s = ctc_loss_for(preds_s)
+
+    # Optional SGM losses
+    loss_sgm_r = torch.zeros((), device=device)
+    loss_sgm_b = torch.zeros((), device=device)
+    loss_sgm_s = torch.zeros((), device=device)
+    if need_sgm and feats_cat is not None:
+        left_ctx, right_ctx, tgt_ids, tgt_mask = pre_sgm_ctx
+        loss_sgm_r = sgm_head(feats_r, left_ctx, right_ctx, tgt_ids, tgt_mask)["loss_sgm"]
+        loss_sgm_b = sgm_head(feats_b, left_ctx, right_ctx, tgt_ids, tgt_mask)["loss_sgm"]
+        loss_sgm_s = sgm_head(feats_s, left_ctx, right_ctx, tgt_ids, tgt_mask)["loss_sgm"]
+
+    # Weighted combine
+    total_ctc = (
+        weights["random"] * loss_ctc_r +
+        weights["block"] * loss_ctc_b +
+        weights["span"] * loss_ctc_s
+    )
+    total_sgm = (
+        weights["random"] * loss_sgm_r +
+        weights["block"] * loss_sgm_b +
+        weights["span"] * loss_sgm_s
+    )
     denom = sum(weights.values())
-    return total/denom, total_ctc/denom, total_sgm/denom
+    total = ctc_lambda * (total_ctc / denom) + sgm_lambda * (total_sgm / denom)
+    return total, (total_ctc / denom).detach(), (total_sgm / denom).detach()
 
 
 def main():
