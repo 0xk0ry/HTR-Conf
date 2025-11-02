@@ -284,10 +284,10 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            loss2, _, _ = compute_losses(
+            loss2, _, _ = tri_masked_loss(
                 args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                 nb_iter, ctc_lambda, sgm_lambda, stoi,
-                mask_mode='span', mask_ratio=0.6, block_span=4, max_span_length=8
+                r_rand=0.60, r_block=0.60, r_span=0.40, max_span=8
             )
             (loss2 / accum_steps).backward()
 
