@@ -251,6 +251,9 @@ def main():
     def amp_ctx():
         return torch.amp.autocast(device_type='cuda') if use_amp else nullcontext()
 
+    # Gradient clipping configuration
+    clip_grad = float(getattr(args, 'clip_grad', 1.0))
+
     for nb_iter in range(start_iter, args.total_iter):
 
         optimizer, current_lr = utils.update_lr_cos(
@@ -270,7 +273,7 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
 
-            with (amp_ctx() if use_amp else nullcontext()):
+            with amp_ctx():
                 loss, loss_ctc, loss_sgm = tri_masked_loss(
                     args, model, sgm_head, image, batch[1], batch_size, criterion, converter,
                     nb_iter, ctc_lambda, sgm_lambda, stoi,
@@ -282,9 +285,31 @@ def main():
             avg_loss_ctc += loss_ctc.mean().item()
             avg_loss_sgm += loss_sgm.mean().item()
 
-        # SAM first step after accumulating all gradients (unscale before stepping)
+        # SAM first step after accumulating all gradients (unscale + clip + check)
         if use_amp:
             scaler.unscale_(optimizer)
+        if clip_grad and clip_grad > 0:
+            try:
+                torch.nn.utils.clip_grad_norm_(param_groups, max_norm=clip_grad)
+            except Exception:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+        # Non-finite check
+        non_finite = False
+        for p in model.parameters():
+            if p.grad is not None and not torch.isfinite(p.grad).all():
+                non_finite = True
+                break
+        if sgm_head is not None and not non_finite:
+            for p in sgm_head.parameters():
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    non_finite = True
+                    break
+        if non_finite:
+            logger.warning(f"Non-finite grads detected before SAM first_step at iter {nb_iter}; skipping update and reducing scale")
+            optimizer.zero_grad(set_to_none=True)
+            if use_amp:
+                scaler.update()
+            continue
         optimizer.first_step(zero_grad=True)
         # Allow another unscale_ call prior to second step on some PyTorch builds
         if use_amp:
@@ -305,9 +330,30 @@ def main():
                 )
             scaler.scale(loss2 / accum_steps).backward()
 
-        # Unscale before second step; update scaler once per macro-step
+        # Unscale before second step; clip + non-finite check; update scaler once per macro-step
         if use_amp:
             scaler.unscale_(optimizer)
+        if clip_grad and clip_grad > 0:
+            try:
+                torch.nn.utils.clip_grad_norm_(param_groups, max_norm=clip_grad)
+            except Exception:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+        non_finite = False
+        for p in model.parameters():
+            if p.grad is not None and not torch.isfinite(p.grad).all():
+                non_finite = True
+                break
+        if sgm_head is not None and not non_finite:
+            for p in sgm_head.parameters():
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    non_finite = True
+                    break
+        if non_finite:
+            logger.warning(f"Non-finite grads detected before SAM second_step at iter {nb_iter}; skipping update and reducing scale")
+            optimizer.zero_grad(set_to_none=True)
+            if use_amp:
+                scaler.update()
+            continue
         optimizer.second_step(zero_grad=True)
         if use_amp:
             scaler.update()
