@@ -72,7 +72,7 @@ def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
     return left, right, tgt, mask
 
 
-class TextualContextHead(nn.Module):
+class TCMHead(nn.Module):
     def __init__(self, d_vis, vocab_size_tcm, d_txt=256, sub_str_len=5, num_heads=8, p_drop=0.1):
         super().__init__()
         self.vocab_size = vocab_size_tcm
