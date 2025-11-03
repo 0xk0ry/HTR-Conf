@@ -40,7 +40,6 @@ def compute_losses(
     pre_tcm_ctx=None,
     use_masking=True,
 ):
-    # 1) Forward
     if tcm_head is None or nb_iter < args.tcm_warmup_iters:
         preds = model(image, use_masking=use_masking, mask_mode=mask_mode,
                       mask_ratio=mask_ratio, max_span_length=max_span_length)
@@ -68,14 +67,12 @@ def compute_losses(
     if tcm_head is not None and feats is not None:
         left_ctx, right_ctx, tgt_ids, tgt_mask = pre_tcm_ctx if pre_tcm_ctx is not None else make_context_batch(
             texts, stoi, sub_str_len=args.tcm_sub_len, device=image.device)
-        # Map visual mask (vis_mask: [B, N]) to target positions (tgt_mask: [B, L])
         if vis_mask is not None:
-            # vis_mask may have shape [B, N]; tgt_mask is [B, L]
             B_v, N_v = vis_mask.shape
             B_t, L_t = tgt_mask.shape
             if N_v != L_t:
-                # linearly sample N_v positions to produce L_t entries
-                idx = torch.linspace(0, N_v - 1, steps=L_t, device=vis_mask.device).long()
+                idx = torch.linspace(0, N_v - 1, steps=L_t,
+                                     device=vis_mask.device).long()
                 focus_mask = vis_mask[:, idx]
             else:
                 focus_mask = vis_mask
@@ -86,7 +83,7 @@ def compute_losses(
             feats,
             left_ctx, right_ctx,
             tgt_ids, tgt_mask,
-            focus_mask=focus_mask  # [B, L] float mask: 1 where visual tokens were masked (mapped)
+            focus_mask=focus_mask
         )
         loss_tcm = out['loss_tcm']
 
@@ -133,10 +130,8 @@ def main():
     logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
     writer = SummaryWriter(args.save_dir)
 
-    # Initialize wandb only if enabled
     if getattr(args, 'use_wandb', False):
         try:
-            wandb = importlib.import_module('wandb')
             wandb.init(project=getattr(args, 'wandb_project', 'None'), name=args.exp_name,
                        config=vars(args), dir=args.save_dir)
             logger.info("Weights & Biases logging enabled")
@@ -157,15 +152,12 @@ def main():
 
     model.train()
     model = model.cuda()
-    # Ensure EMA decay is properly accessed (handle both ema_decay and ema-decay)
-    ema_decay = getattr(args, 'ema_decay', 0.9999)
+    ema_decay = args.ema_decay
     logger.info(f"Using EMA decay: {ema_decay}")
     model_ema = utils.ModelEma(model, ema_decay)
     model.zero_grad()
 
-    # Use centralized checkpoint loader like model_v4-2
-    resume_path = args.resume if getattr(
-        args, 'resume', None) else getattr(args, 'resume_checkpoint', None)
+    resume_path = args.resume
     best_cer, best_wer, start_iter, optimizer_state, train_loss, train_loss_count = utils.load_checkpoint(
         model, model_ema, None, resume_path, logger)
 
@@ -192,33 +184,25 @@ def main():
     criterion = torch.nn.CTCLoss(reduction='none', zero_infinity=True)
     converter = utils.CTCLabelConverter(train_dataset.ralph.values())
 
-    tcm_enable = getattr(args, 'tcm_enable', True)
-    tcm_lambda = getattr(args, 'tcm_lambda', 1.0)       # λ2 in the paper
-    ctc_lambda = getattr(args, 'ctc_lambda', 0.1)       # λ1 in the paper
-    tcm_sub_len = getattr(args, 'tcm_sub_len', 5)
-    tcm_warmup = getattr(args, 'tcm_warmup_iters', 0)   # 0 = start immediately
     stoi, itos, pad_id, eos_id, bos_l_id, bos_r_id = build_tcm_vocab(converter)
     vocab_size_tcm = len(itos)
     d_vis = model.embed_dim
 
-    tcm_head = TCMHead(d_vis=d_vis, vocab_size_tcm=vocab_size_tcm,
-                       sub_str_len=tcm_sub_len).cuda()
-    if tcm_head is not None:
+    if args.tcm_enable:
+        tcm_head = TCMHead(d_vis=d_vis, vocab_size_tcm=vocab_size_tcm,
+                           sub_str_len=args.tcm_sub_len).cuda()
         tcm_head.train()
-    # Respect flag to disable tcm entirely
-    if not tcm_enable:
+    else:
         tcm_head = None
 
-    # Build optimizer over model + tcm head (if enabled) so tcm params actually update
     param_groups = list(model.parameters())
-    if tcm_enable and tcm_head is not None:
+    if args.tcm_enable and tcm_head is not None:
         param_groups += list(tcm_head.parameters())
         logger.info(
             f"Optimizing {sum(p.numel() for p in tcm_head.parameters())} tcm params in addition to model params")
     optimizer = sam.SAM(param_groups, torch.optim.AdamW,
                         lr=1e-7, betas=(0.9, 0.99), weight_decay=args.weight_decay)
 
-    # Load optimizer & tcm head state after initialization
     if optimizer_state is not None:
         try:
             optimizer.load_state_dict(optimizer_state)
@@ -238,7 +222,6 @@ def main():
             logger.warning(
                 f"Could not load optimizer state from checkpoint: {e}")
 
-    # If resuming and tcm head exists in checkpoint, restore it so tcm loss doesn't reset
     if resume_path and os.path.isfile(resume_path) and tcm_head is not None:
         try:
             ckpt = torch.load(resume_path, map_location='cpu',
@@ -255,22 +238,17 @@ def main():
     best_cer, best_wer = best_cer, best_wer
     train_loss = train_loss
     train_loss_count = train_loss_count
+
     #### ---- train & eval ---- ####
     logger.info('Start training...')
     accum_steps = max(1, int(getattr(args, 'accum_steps', 1)))
     micro_step = 0
-    # stats across macro iters
     avg_loss_ctc = 0.0
     avg_loss_tcm = 0.0
 
-    # Pure FP32 training (AMP and grad clipping removed by request)
-
     for nb_iter in range(start_iter, args.total_iter):
-
         optimizer, current_lr = utils.update_lr_cos(
             nb_iter, args.warm_up_iter, args.total_iter, args.max_lr, optimizer)
-
-        # Accumulate gradients over accum_steps micro-batches, then perform one SAM step
         optimizer.zero_grad()
         total_loss_this_macro = 0.0
         avg_loss_ctc = 0.0
@@ -278,7 +256,6 @@ def main():
         cached_batches = []
         for micro_step in range(accum_steps):
             batch = next(train_iter)
-            # cache CPU tensors and labels for SAM second pass
             cached_batches.append(batch)
             image = batch[0].cuda(non_blocking=True)
             text, length = converter.encode(batch[1])
@@ -286,7 +263,7 @@ def main():
             if args.use_masking:
                 loss, loss_ctc, loss_tcm = tri_masked_loss(
                     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
-                    nb_iter, ctc_lambda, tcm_lambda, stoi,
+                    nb_iter, args.ctc_lambda, args.tcm_lambda, stoi,
                     r_rand=args.r_rand,
                     r_block=args.r_block,
                     block_span=args.block_span,
@@ -296,15 +273,13 @@ def main():
             else:
                 loss, loss_ctc, loss_tcm = compute_losses(
                     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
-                    nb_iter, ctc_lambda, tcm_lambda, stoi, use_masking=False
+                    nb_iter, args.ctc_lambda, args.tcm_lambda, stoi, use_masking=False
                 )
-            # average over accum steps
             (loss / accum_steps).backward()
             total_loss_this_macro += loss.item()
             avg_loss_ctc += loss_ctc.mean().item()
             avg_loss_tcm += loss_tcm.mean().item()
 
-        # SAM first step after accumulating all gradients
         optimizer.first_step(zero_grad=True)
 
         # Recompute with perturbed weights and accumulate again for the second step
@@ -316,7 +291,7 @@ def main():
             if args.use_masking:
                 loss2, loss_ctc, loss_tcm = tri_masked_loss(
                     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
-                    nb_iter, ctc_lambda, tcm_lambda, stoi,
+                    nb_iter, args.ctc_lambda, args.tcm_lambda, stoi,
                     r_rand=args.r_rand,
                     r_block=args.r_block,
                     block_span=args.block_span,
@@ -326,18 +301,13 @@ def main():
             else:
                 loss2, loss_ctc, loss_tcm = compute_losses(
                     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
-                    nb_iter, ctc_lambda, tcm_lambda, stoi, use_masking=False
+                    nb_iter, args.ctc_lambda, args.tcm_lambda, stoi, use_masking=False
                 )
             (loss2 / accum_steps).backward()
-
-        # SAM second step
         optimizer.second_step(zero_grad=True)
-
         model.zero_grad()
-        # Update EMA once per macro-iteration (after one optimizer step)
         model_ema.update(model, num_updates=nb_iter / 2)
 
-        # Aggregate stats for logging (use averages across accum_steps)
         train_loss += total_loss_this_macro / accum_steps
         train_loss_count += 1
 
