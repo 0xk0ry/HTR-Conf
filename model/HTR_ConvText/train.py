@@ -171,7 +171,7 @@ def main():
 
     logger.info('Loading train loader...')
     train_dataset = dataset.myLoadDS(
-        args.train_data_list, args.data_path, args.img_size, lang=args.dataset)
+        args.train_data_list, args.data_path, args.img_size, dataset=args.dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=args.train_bs,
                                                shuffle=True,
@@ -182,7 +182,7 @@ def main():
 
     logger.info('Loading val loader...')
     val_dataset = dataset.myLoadDS(
-        args.val_data_list, args.data_path, args.img_size, ralph=train_dataset.ralph, lang=getattr(args, 'lang', 'eng'))
+        args.val_data_list, args.data_path, args.img_size, ralph=train_dataset.ralph, dataset=args.dataset)
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                              batch_size=args.val_bs,
                                              shuffle=False,
