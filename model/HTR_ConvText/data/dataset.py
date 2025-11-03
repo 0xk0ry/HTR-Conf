@@ -56,16 +56,26 @@ class myLoadDS(Dataset):
             match dataset:
                 case 'iam':
                     self.ralph = {
-                        ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+                        idx: char for idx, char in enumerate(
+                            ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+                        )
                     }
                 case 'lam':
                     self.ralph = {
-                        ' !#%&\'()+,-./0123456789:;=?ABCDEFGHIJKLMNOPQRSTUVWXZabcdefghijlmnopqrstuvwxyz|°·ÈÉàèéìòù–'
+                        idx: char for idx, char in enumerate(
+                            ' !"#%&\'()+,-./0123456789:;=?ABCDEFGHIJKLMNOPQRSTUVWXZabcdefghijlmnopqrstuvwxyz|°·ÈÉàèéìòù–'
+                        )
                     }
                 case 'read2016':
                     self.ralph = {
-                        ' ()+,-./0123456789:<>ABCDEFGHIJKLMNOPQRSTUVWYZ[]abcdefghijklmnopqrstuvwxyz¾Ößäöüÿāēōūȳ̄̈—'
+                        idx: char for idx, char in enumerate(
+                            ' ()+,-./0123456789:<>ABCDEFGHIJKLMNOPQRSTUVWYZ[]abcdefghijklmnopqrstuvwxyz¾Ößäöüÿāēōūȳ̄̈—'
+                        )
                     }
+                case _:
+                    alph = get_alphabet(self.tlbls)
+                    self.ralph = dict(zip(alph.values(), alph.keys()))
+                    self.alph = alph
         else:
             alph = get_alphabet(self.tlbls)
             self.ralph = dict(zip(alph.values(), alph.keys()))
