@@ -154,21 +154,21 @@ def get_args_parser():
     parser.add_argument('--test-data-list', type=str, default='./data/iam/test.ln',
                         help='test data list')
     parser.add_argument('--nb-cls', default=80, type=int,
-                        help='nb of classes, en=93+1, deu=101+1, ita=113+1, vie=227+1')
+                        help='nb of classes, IAM=79+1, READ2016=89+1')
 
-    parser.add_argument('--sgm-enable', action='store_true',
-                        default=False, help='whether to use SGM')
-    parser.add_argument('--sgm-lambda', default=1.0, type=float,
-                        help='SGM loss weight (λ2 in the paper)')
+    parser.add_argument('--tcm-enable', action='store_true',
+                        default=False, help='whether to use TCM')
+    parser.add_argument('--tcm-lambda', default=1.0, type=float,
+                        help='TCM loss weight (λ2 in the paper)')
     parser.add_argument('--ctc-lambda', default=0.1, type=float,
                         help='CTC loss weight (λ1 in the paper)')
-    parser.add_argument('--sgm-sub-len', default=5, type=int,
-                        help='SGM context sub-string length')
-    parser.add_argument('--sgm-warmup-iters', default=0,
-                        type=int, help='SGM warmup iters, 0 = start immediately')
+    parser.add_argument('--tcm-sub-len', default=5, type=int,
+                        help='TCM context sub-string length')
+    parser.add_argument('--tcm-warmup-iters', default=0,
+                        type=int, help='TCM warmup iters, 0 = start immediately')
     # Language toggle: eng (dynamic alphabet) | vie (predefined Vietnamese ralph)
-    parser.add_argument('--lang', type=str, default='eng', choices=['eng', 'vie'],
-                        help='Language setting: eng uses dynamic alphabet, vie uses predefined Vietnamese ralph')
+    parser.add_argument('--dataset', type=str, choices=['iam', 'read2016', 'lam'],
+                        help='Dataset setting: iam, read2016, or lam')
     parser.add_argument('--use-masking', action='store_true', default=False,
                         help='whether to use masking strategy during training')
     return parser.parse_args()
