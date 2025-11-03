@@ -7,8 +7,6 @@ import editdistance
 
 
 def validation(model, criterion, evaluation_loader, converter):
-    """ validation or evaluation """
-
     norm_ED = 0
     norm_ED_wer = 0
 

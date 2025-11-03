@@ -37,7 +37,6 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
-        # num_patches argument is repurposed here as the max relative positions window
         max_rel_positions = max(
             1, int(num_patches)) if num_patches is not None else 1024
         self.rel_pos_bias = RelativePositionBias1D(
@@ -148,7 +147,7 @@ class Upsample1D(nn.Module):
         return x.transpose(1, 2)
 
 
-class SqueezeformerBlock(nn.Module):
+class ConvTextBlock(nn.Module):
     def __init__(self,
                  dim,
                  num_heads,
@@ -177,13 +176,11 @@ class SqueezeformerBlock(nn.Module):
         self.ffn2 = FeedForward(
             dim, ff_hidden, dropout=ff_dropout, activation=nn.SiLU)
 
-        # post-LNs
         self.postln_attn = norm_layer(dim, elementwise_affine=True)
         self.postln_ffn1 = norm_layer(dim, elementwise_affine=True)
         self.postln_conv = norm_layer(dim, elementwise_affine=True)
         self.postln_ffn2 = norm_layer(dim, elementwise_affine=True)
 
-        # stochastic depth
         self.dp_attn = DropPath(
             drop_path) if drop_path > 0.0 else nn.Identity()
         self.dp_ffn1 = DropPath(
@@ -193,7 +190,6 @@ class SqueezeformerBlock(nn.Module):
         self.dp_ffn2 = DropPath(
             drop_path) if drop_path > 0.0 else nn.Identity()
 
-        # LayerScale on each residual branch (tiny init)
         self.ls_attn = LayerScale(dim, init_values=layerscale_init)
         self.ls_ffn1 = LayerScale(dim, init_values=layerscale_init)
         self.ls_conv = LayerScale(dim, init_values=layerscale_init)
@@ -212,7 +208,7 @@ class SqueezeformerBlock(nn.Module):
 def get_2d_sincos_pos_embed(embed_dim, grid_size):
     grid_h = np.arange(grid_size[0], dtype=np.float32)
     grid_w = np.arange(grid_size[1], dtype=np.float32)
-    grid = np.meshgrid(grid_w, grid_h)  # here w goes first
+    grid = np.meshgrid(grid_w, grid_h)
     grid = np.stack(grid, axis=0)
 
     grid = grid.reshape([2, 1, grid_size[0], grid_size[1]])
@@ -233,29 +229,22 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
 
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
-    """
-    embed_dim: output dimension for each position
-    pos: a list of positions to be encoded: size (M,)
-    out: (M, D)
-    """
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float64)
     omega /= embed_dim / 2.
-    omega = 1. / 10000 ** omega  # (D/2,)
+    omega = 1. / 10000 ** omega
 
-    pos = pos.reshape(-1)  # (M,)
-    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
+    pos = pos.reshape(-1)
+    out = np.einsum('m,d->md', pos, omega)
 
-    emb_sin = np.sin(out)  # (M, D/2)
-    emb_cos = np.cos(out)  # (M, D/2)
+    emb_sin = np.sin(out)
+    emb_cos = np.cos(out)
 
-    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+    emb = np.concatenate([emb_sin, emb_cos], axis=1)
     return emb
 
 
-class MaskedAutoencoderViT(nn.Module):
-    """HTR encoder with selectable backend (ViT or Conformer)."""
-
+class HTR_ConvText(nn.Module):
     def __init__(
         self,
         nb_cls=80,
@@ -279,17 +268,16 @@ class MaskedAutoencoderViT(nn.Module):
 
         self.patch_embed = resnet18.ResNet18(embed_dim)
         self.embed_dim = embed_dim
-        # Use a configurable max sequence length for relative position window
         self.max_rel_pos = int(max_seq_len)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
-            SqueezeformerBlock(embed_dim, num_heads, self.max_rel_pos,
+            ConvTextBlock(embed_dim, num_heads, self.max_rel_pos,
                                mlp_ratio=mlp_ratio,
                                ff_dropout=dropout, attn_dropout=dropout,
                                conv_dropout=dropout, conv_kernel_size=conv_kernel_size,
-                               conv_expansion=1.0,                 # Swish@1.0 to start
+                               conv_expansion=1.0,
                                norm_layer=norm_layer, drop_path=dpr[i],
                                layerscale_init=1e-5)
             for i in range(depth)
@@ -369,8 +357,8 @@ class MaskedAutoencoderViT(nn.Module):
         positions = torch.arange(L, device=device).view(1, 1, L)
         starts_exp = starts.unsqueeze(-1)
         ends_exp = (starts + lengths).unsqueeze(-1).clamp(max=L)
-        spans_mask = (positions >= starts_exp) & (positions < ends_exp)  # [B, K, L]
-        masked_any = spans_mask.any(dim=1)  # [B, L]
+        spans_mask = (positions >= starts_exp) & (positions < ends_exp)
+        masked_any = spans_mask.any(dim=1)
         keep_mask = ~masked_any
         return keep_mask.unsqueeze(-1)
 
@@ -383,18 +371,18 @@ class MaskedAutoencoderViT(nn.Module):
         assert C == self.embed_dim, f"Expected embed_dim {self.embed_dim}, got {C}"
         x = x.view(B, C, -1).permute(0, 2, 1)
 
-        masked_positions_1d = None  # [B, L] float in {0.0 (keep), 1.0 (masked)}
+        masked_positions_1d = None
         if use_masking:
             if mask_mode == "random":
-                keep_mask_1d = self.mask_random_1d(x, mask_ratio).float()  # [B, L]
-                mask = keep_mask_1d.unsqueeze(-1)  # [B, L, 1]
+                keep_mask_1d = self.mask_random_1d(x, mask_ratio).float()
+                mask = keep_mask_1d.unsqueeze(-1)
             elif mask_mode in ("block"):
-                keep_mask = self.mask_block_1d(x, mask_ratio, block_span).float()  # [B, L, 1]
+                keep_mask = self.mask_block_1d(x, mask_ratio, block_span).float()
                 keep_mask_1d = keep_mask.squeeze(-1)
                 mask = keep_mask
             elif mask_mode in ("span"):
                 keep_mask = self.mask_span_1d(
-                    x, mask_ratio, max_span_length).float()  # [B, L, 1]
+                    x, mask_ratio, max_span_length).float()
                 keep_mask_1d = keep_mask.squeeze(-1)
                 mask = keep_mask
             else:
@@ -404,7 +392,6 @@ class MaskedAutoencoderViT(nn.Module):
                     x, mask_ratio, max_span_length).float()
                 keep_mask_1d = keep_mask.squeeze(-1)
                 mask = keep_mask
-            # build masked positions: 1 where masked, 0 where kept
             masked_positions_1d = (1.0 - keep_mask_1d).clamp(min=0.0, max=1.0)
             x = mask * x + (1.0 - mask) * \
                 self.mask_token.expand(x.size(0), x.size(1), x.size(2))
@@ -427,9 +414,8 @@ class MaskedAutoencoderViT(nn.Module):
     def forward(self, x, use_masking=False, return_features=False, return_mask=False,
                 mask_mode="span", mask_ratio=None, block_span=None, max_span_length=None):
         feats, masked_positions_1d = self.forward_features(
-            # [B, N, D]
             x, use_masking=use_masking, mask_mode=mask_mode, mask_ratio=mask_ratio, block_span=block_span, max_span_length=max_span_length)
-        logits = self.head(feats)               # [B, N, nb_cls]  → CTC
+        logits = self.head(feats)
         if return_features and return_mask:
             return logits, feats, (masked_positions_1d if masked_positions_1d is not None else None)
         if return_features:
@@ -440,7 +426,7 @@ class MaskedAutoencoderViT(nn.Module):
 
 
 def create_model(nb_cls, img_size, mlp_ratio=4, **kwargs):
-    model = MaskedAutoencoderViT(
+    model = HTR_ConvText(
         nb_cls,
         img_size=img_size,
         patch_size=(4, 64),

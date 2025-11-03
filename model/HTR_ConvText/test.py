@@ -19,7 +19,6 @@ def main():
     args.save_dir = os.path.join(args.out_dir, args.exp_name)
     os.makedirs(args.save_dir, exist_ok=True)
     logger = utils.get_logger(args.save_dir)
-    # logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
 
     model = htr_convtext.create_model(
         nb_cls=args.nb_cls, img_size=args.img_size[::-1])
@@ -78,43 +77,7 @@ def main():
         "predictions": []
     }
 
-    # Helper functions for per-sample CER / WER
-    def _levenshtein(a: str, b: str):
-        # Early exits
-        if a == b:
-            return 0
-        la, lb = len(a), len(b)
-        if la == 0:
-            return lb
-        if lb == 0:
-            return la
-        # DP single row optimization
-        prev = list(range(lb + 1))
-        for i, ca in enumerate(a, 1):
-            cur = [i]
-            for j, cb in enumerate(b, 1):
-                cost = 0 if ca == cb else 1
-                cur.append(min(prev[j] + 1,              # deletion
-                               cur[j - 1] + 1,          # insertion
-                               prev[j - 1] + cost))     # substitution
-            prev = cur
-        return prev[-1]
-
-    def _cer(pred: str, gt: str):
-        if len(gt) == 0:
-            return 0.0 if len(pred) == 0 else 1.0
-        return _levenshtein(pred, gt) / len(gt)
-
-    def _wer(pred: str, gt: str):
-        gt_words = gt.split()
-        pred_words = pred.split()
-        if len(gt_words) == 0:
-            return 0.0 if len(pred_words) == 0 else 1.0
-        return _levenshtein(pred_words, gt_words) / len(gt_words)
-
-    # Adapt Levenshtein to list of tokens (words)
     def _levenshtein(pred_tokens, gt_tokens):
-        # Works for both list (words) and string (chars) due to iteration
         if pred_tokens == gt_tokens:
             return 0
         lp, lg = len(pred_tokens), len(gt_tokens)
@@ -134,11 +97,9 @@ def main():
             prev = cur
         return prev[-1]
 
-    # Re-map string-based levenshtein after redefining token version
     def _levenshtein_str(a: str, b: str):
         return _levenshtein(list(a), list(b))
 
-    # Override char-based helpers to use token-aware underlying function
     def _cer(pred: str, gt: str):
         if len(gt) == 0:
             return 0.0 if len(pred) == 0 else 1.0
@@ -152,7 +113,6 @@ def main():
         return _levenshtein(pred_words, gt_words) / len(gt_words)
 
     for i, (pred, label) in enumerate(zip(preds, labels)):
-        # Retrieve corresponding image file path from dataset (test_dataset order matches loader order with shuffle=False)
         if i < len(test_dataset.fns):
             img_path = test_dataset.fns[i]
             img_name = os.path.basename(img_path)
@@ -170,7 +130,6 @@ def main():
             "wer": round(float(_wer(pred, label)), 6)
         })
 
-    # Save to JSON file
     pred_file = os.path.join(args.save_dir, 'predictions.json')
     with open(pred_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)

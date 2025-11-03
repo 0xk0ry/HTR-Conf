@@ -4,8 +4,6 @@ import torch.nn.functional as F
 
 
 def build_tcm_vocab(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos_right>")):
-    # converter.character is typically an ordered list or str of your symbols
-    # exclude the CTC blank; keep only real symbols
     base = list(converter.character)
     stoi = {ch: i for i, ch in enumerate(base)}
     for t in add_tokens:
@@ -26,13 +24,7 @@ def texts_to_ids(texts, stoi):
 
 
 def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
-    """
-    texts: list[str], length B
-    returns:
-      left_ctx  [B, Lmax, S], right_ctx [B, Lmax, S], tgt_ids [B, Lmax], tgt_mask [B, Lmax]
-    """
     ids = texts_to_ids(texts, stoi)
-    # Ensure all per-sample id tensors are on the target device to avoid CPU/CUDA cat issues
     ids = [t.to(device) for t in ids]
     B = len(ids)
     Lmax = max(t.size(0) for t in ids)
@@ -51,7 +43,6 @@ def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
         tgt[b, :L] = seq
         mask[b, :L] = 1.0
         for i in range(L):
-            # left window: ... c_{i-2}, c_{i-1} with BOS when missing
             l_start = max(0, i - S)
             l_ctx = seq[l_start:i]
             need = S - l_ctx.size(0)
@@ -60,7 +51,6 @@ def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
                     [torch.tensor([stoi["<bos_left>"]] * need, device=device), l_ctx], dim=0)
             left[b, i] = l_ctx[-S:]
 
-            # right window: c_{i+1}, c_{i+2}, ... with EOS when missing
             r_end = min(L, i + 1 + S)
             r_ctx = seq[i+1:r_end]
             need = S - r_ctx.size(0)
@@ -82,7 +72,6 @@ class TCMHead(nn.Module):
         self.dir_left = nn.Parameter(torch.randn(1, 1, d_txt))
         self.dir_right = nn.Parameter(torch.randn(1, 1, d_txt))
 
-        # NEW: order-aware encoder over window
         self.ctx_conv = nn.Conv1d(d_txt, d_txt, kernel_size=3, padding=1)
 
         self.txt_proj = nn.Linear(d_txt, d_vis)
@@ -92,28 +81,23 @@ class TCMHead(nn.Module):
         self.classifier = nn.Linear(d_vis, vocab_size_tcm)
 
     def _context_to_query(self, ctx_ids, dir_token):
-        # ctx_ids: [B, L, S]
-        E = self.emb(ctx_ids)                 # [B, L, S, d_txt]
-        # conv expects [B*L, d_txt, S]
+        E = self.emb(ctx_ids)
         B, L, S, D = E.shape
-        x = E.view(B*L, S, D).transpose(1, 2)  # [B*L, d_txt, S]
-        x = self.ctx_conv(x)                  # [B*L, d_txt, S]
-        x = x.mean(dim=-1)                    # [B*L, d_txt]
-        x = x.view(B, L, D)                   # [B, L, d_txt]
+        x = E.view(B*L, S, D).transpose(1, 2)
+        x = self.ctx_conv(x)
+        x = x.mean(dim=-1)
+        x = x.view(B, L, D)
 
         x = x + dir_token
         x = self.txt_proj(x)
         return self.q_norm(x)
 
-    # Q: [B, L, D], F: [B, N, D]
     def _cross_attend(self, Q, F):
-        # scaled dot-product attention: A = softmax(QK^T)
         K = self.kv_norm(F)
         V = K
         attn = torch.einsum('bld,bnd->bln', Q, K) / \
-            (K.size(-1) ** 0.5)   # [B, L, N]
+            (K.size(-1) ** 0.5)
         A = attn.softmax(dim=-1)
-        # [B, L, D]
         out = torch.einsum('bln,bnd->bld', A, V)
         return self.dropout(out)
 
@@ -123,7 +107,7 @@ class TCMHead(nn.Module):
                 right_ctx_ids,
                 tgt_ids,
                 tgt_mask,
-                focus_mask=None):   # ← new
+                focus_mask=None):
         Ql = self._context_to_query(left_ctx_ids,  self.dir_left)
         Qr = self._context_to_query(right_ctx_ids, self.dir_right)
 
@@ -144,7 +128,6 @@ class TCMHead(nn.Module):
             reduction='none'
         ).view_as(tgt_ids)
 
-        # base mask over valid targets
         if focus_mask is not None:
             weights = tgt_mask * (1.0 + focus_mask)
         else:
