@@ -261,14 +261,19 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
             if args.use_masking:
-                loss, loss_ctc, loss_tcm = tri_masked_loss(
+                # loss, loss_ctc, loss_tcm = tri_masked_loss(
+                #     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
+                #     nb_iter, args.ctc_lambda, args.tcm_lambda, stoi,
+                #     r_rand=args.r_rand,
+                #     r_block=args.r_block,
+                #     block_span=args.block_span,
+                #     r_span=args.r_span,
+                #     max_span=args.max_span
+                # )
+                loss, loss_ctc, loss_tcm = compute_losses(
                     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
                     nb_iter, args.ctc_lambda, args.tcm_lambda, stoi,
-                    r_rand=args.r_rand,
-                    r_block=args.r_block,
-                    block_span=args.block_span,
-                    r_span=args.r_span,
-                    max_span=args.max_span
+                    mask_mode='span', mask_ratio=0.4, max_span_length=8, use_masking=True
                 )
             else:
                 loss, loss_ctc, loss_tcm = compute_losses(
@@ -289,14 +294,19 @@ def main():
             text, length = converter.encode(batch[1])
             batch_size = image.size(0)
             if args.use_masking:
-                loss2, loss_ctc, loss_tcm = tri_masked_loss(
+                # loss2, loss_ctc, loss_tcm = tri_masked_loss(
+                #     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
+                #     nb_iter, args.ctc_lambda, args.tcm_lambda, stoi,
+                #     r_rand=args.r_rand,
+                #     r_block=args.r_block,
+                #     block_span=args.block_span,
+                #     r_span=args.r_span,
+                #     max_span=args.max_span
+                # )
+                loss2, loss_ctc, loss_tcm = compute_losses(
                     args, model, tcm_head, image, batch[1], batch_size, criterion, converter,
                     nb_iter, args.ctc_lambda, args.tcm_lambda, stoi,
-                    r_rand=args.r_rand,
-                    r_block=args.r_block,
-                    block_span=args.block_span,
-                    r_span=args.r_span,
-                    max_span=args.max_span
+                    mask_mode='span', mask_ratio=0.4, max_span_length=8, use_masking=True
                 )
             else:
                 loss2, loss_ctc, loss_tcm = compute_losses(
@@ -337,26 +347,26 @@ def main():
                                                                              criterion,
                                                                              val_loader,
                                                                              converter)
-                # Save checkpoint every print interval (like model_v4-2)
-                ckpt_name = f"checkpoint_{best_cer:.4f}_{best_wer:.4f}_{nb_iter}.pth"
-                checkpoint = {
-                    'model': model.state_dict(),
-                    'state_dict_ema': model_ema.ema.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'nb_iter': nb_iter,
-                    'best_cer': best_cer,
-                    'best_wer': best_wer,
-                    'args': vars(args),
-                    'random_state': random.getstate(),
-                    'numpy_state': np.random.get_state(),
-                    'torch_state': torch.get_rng_state(),
-                    'torch_cuda_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
-                    'train_loss': train_loss,
-                    'train_loss_count': train_loss_count,
-                }
-                if tcm_head is not None:
-                    checkpoint['tcm_head'] = tcm_head.state_dict()
-                torch.save(checkpoint, os.path.join(args.save_dir, ckpt_name))
+                if nb_iter % args.eval_iter*5 == 0:
+                    ckpt_name = f"checkpoint_{best_cer:.4f}_{best_wer:.4f}_{nb_iter}.pth"
+                    checkpoint = {
+                        'model': model.state_dict(),
+                        'state_dict_ema': model_ema.ema.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'nb_iter': nb_iter,
+                        'best_cer': best_cer,
+                        'best_wer': best_wer,
+                        'args': vars(args),
+                        'random_state': random.getstate(),
+                        'numpy_state': np.random.get_state(),
+                        'torch_state': torch.get_rng_state(),
+                        'torch_cuda_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                        'train_loss': train_loss,
+                        'train_loss_count': train_loss_count,
+                    }
+                    if tcm_head is not None:
+                        checkpoint['tcm_head'] = tcm_head.state_dict()
+                    torch.save(checkpoint, os.path.join(args.save_dir, ckpt_name))
                 if val_cer < best_cer:
                     logger.info(
                         f'CER improved from {best_cer:.4f} to {val_cer:.4f}!!!')
