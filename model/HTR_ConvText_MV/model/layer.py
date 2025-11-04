@@ -2,7 +2,6 @@ import torch
 from torch import nn
 from typing import Optional, Union, Tuple
 
-
 class ConvLayer2d(nn.Module):
     def __init__(
         self,
@@ -19,7 +18,7 @@ class ConvLayer2d(nn.Module):
         norm_layer: Optional[nn.Module] = None,
         act_layer: Optional[nn.Module] = None,
     ):
-        super().__init__()
+        super().__init__()  
         layers = []
         layers.append(
             nn.Conv2d(
@@ -41,21 +40,19 @@ class ConvLayer2d(nn.Module):
             if act_layer is None:
                 act_layer = nn.ReLU(inplace=True)
             layers.append(act_layer)
-
+        
+     
         self.block = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.block(x)
-
+    
 # PEG  from https://arxiv.org/abs/2102.10882
-
-
 class PosCNN(nn.Module):
     def __init__(self, in_chans, embed_dim=None, s=1):
         super(PosCNN, self).__init__()
         self.proj = nn.Sequential(
-            nn.Conv2d(in_chans, embed_dim, 3, s, 1,
-                      bias=True, groups=embed_dim),
+            nn.Conv2d(in_chans, embed_dim, 3, s, 1, bias=True, groups=embed_dim),
         )
         self.s = s
 
@@ -73,3 +70,5 @@ class PosCNN(nn.Module):
 
     def no_weight_decay(self):
         return ["proj.%d.weight" % i for i in range(4)]
+
+ 
