@@ -184,7 +184,7 @@ def main():
     criterion = torch.nn.CTCLoss(reduction='none', zero_infinity=True)
     converter = utils.CTCLabelConverter(train_dataset.ralph.values())
 
-    stoi, itos, pad_id, eos_id, bos_l_id, bos_r_id = build_tcm_vocab(converter)
+    stoi, itos, _ = build_tcm_vocab(converter)
     vocab_size_tcm = len(itos)
     d_vis = model.embed_dim
 
