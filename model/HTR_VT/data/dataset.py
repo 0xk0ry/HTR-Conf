@@ -59,24 +59,7 @@ class myLoadDS(Dataset):
                 # Predefined Vietnamese-inclusive alphabet (same set as other models)
                 self.ralph = {
                     idx: char for idx, char in enumerate(
-                        'abcdefghijklmnopqrstuvwxyz'
-                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-                        '0123456789'
-                        '.,!?;: "#&\'()*+-/%=<>@[]^_`{|}~'
-                        'àáảãạăằắẳẵặâầấẩẫậ'
-                        'èéẻẽẹêềếểễệ'
-                        'ìíỉĩị'
-                        'òóỏõọôồốổỗộơờớởỡợ'
-                        'ùúủũụưừứửữự'
-                        'ỳýỷỹỵ'
-                        'đ'
-                        'ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ'
-                        'ÈÉẺẼẸÊỀẾỂỄỆ'
-                        'ÌÍỈĨỊ'
-                        'ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ'
-                        'ÙÚỦŨỤƯỪỨỬỮỰ'
-                        'ỲÝỶỸỴ'
-                        'Đ'
+                        ' !"%&()*,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYabcdefghijklmnopqrstuvxyzÀÁÂÔÚÝàáâãèéêìíòóôõùúýĂăĐđĩũƠơƯưạẢảẤấẦầẩẫậắằẳẵặẹẻẽếỀềỂểễỆệỉịọỏỐốỒồổỗộớờỞởỡợụỦủứừửữựỳỷỹ'
                     )
                 }
             else:
