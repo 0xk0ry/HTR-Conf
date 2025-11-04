@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def build_tcm_vocab(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos_right>")):
+def build_tcm_vocab(converter, add_tokens=("<pad>",)):
     base = list(converter.character)
     stoi = {ch: i for i, ch in enumerate(base)}
     for t in add_tokens:
@@ -13,10 +13,7 @@ def build_tcm_vocab(converter, add_tokens=("<pad>", "<eos>", "<bos_left>", "<bos
     for k, v in stoi.items():
         itos[v] = k
     pad_id = stoi["<pad>"]
-    eos_id = stoi["<eos>"]
-    bos_l_id = stoi["<bos_left>"]
-    bos_r_id = stoi["<bos_right>"]
-    return stoi, itos, pad_id, eos_id, bos_l_id, bos_r_id
+    return stoi, itos, pad_id
 
 
 def texts_to_ids(texts, stoi):
@@ -24,61 +21,55 @@ def texts_to_ids(texts, stoi):
 
 
 def make_context_batch(texts, stoi, sub_str_len=5, device='cuda'):
-    ids = texts_to_ids(texts, stoi)
-    ids = [t.to(device) for t in ids]
-    B = len(ids)
-    Lmax = max(t.size(0) for t in ids)
-    S = sub_str_len
+    ids = [torch.tensor([stoi[ch] for ch in t], dtype=torch.long, device=device) for t in texts]
+    B = len(ids); Lmax = max(t.size(0) for t in ids); S = sub_str_len
+    PAD = stoi["<pad>"]
 
-    left = torch.full(
-        (B, Lmax, S), fill_value=stoi["<pad>"], dtype=torch.long, device=device)
-    right = torch.full(
-        (B, Lmax, S), fill_value=stoi["<pad>"], dtype=torch.long, device=device)
-    tgt = torch.full(
-        (B, Lmax),    fill_value=stoi["<pad>"], dtype=torch.long, device=device)
-    mask = torch.zeros((B, Lmax),   dtype=torch.float32,      device=device)
+    left  = torch.full((B, Lmax, S), PAD, dtype=torch.long, device=device)
+    right = torch.full((B, Lmax, S), PAD, dtype=torch.long, device=device)
+    tgt   = torch.full((B, Lmax),    PAD, dtype=torch.long, device=device)
+    mask  = torch.zeros((B, Lmax),   dtype=torch.float32,   device=device)
 
     for b, seq in enumerate(ids):
         L = seq.size(0)
-        tgt[b, :L] = seq
+        tgt[b, :L]  = seq
         mask[b, :L] = 1.0
         for i in range(L):
-            l_start = max(0, i - S)
-            l_ctx = seq[l_start:i]
-            need = S - l_ctx.size(0)
-            if need > 0:
-                l_ctx = torch.cat(
-                    [torch.tensor([stoi["<bos_left>"]] * need, device=device), l_ctx], dim=0)
+            l_ctx = seq[max(0, i-S):i]
+            # left pad with PAD
+            if l_ctx.numel() < S:
+                l_ctx = torch.cat([torch.full((S - l_ctx.numel(),), PAD, device=device), l_ctx], dim=0)
             left[b, i] = l_ctx[-S:]
 
-            r_end = min(L, i + 1 + S)
-            r_ctx = seq[i+1:r_end]
-            need = S - r_ctx.size(0)
-            if need > 0:
-                r_ctx = torch.cat([r_ctx, torch.tensor(
-                    [stoi["<eos>"]] * need, device=device)], dim=0)
+            r_ctx = seq[i+1:min(L, i+1+S)]
+            # right pad with PAD
+            if r_ctx.numel() < S:
+                r_ctx = torch.cat([r_ctx, torch.full((S - r_ctx.numel(),), PAD, device=device)], dim=0)
             right[b, i] = r_ctx[:S]
 
     return left, right, tgt, mask
 
 
 class TCMHead(nn.Module):
-    def __init__(self, d_vis, vocab_size_tcm, d_txt=256, sub_str_len=5, num_heads=8, p_drop=0.1):
+    def __init__(self, d_vis, vocab_size_tcm, pad_id, d_txt=256, sub_str_len=5, p_drop=0.1):
         super().__init__()
         self.vocab_size = vocab_size_tcm
         self.sub_str_len = sub_str_len
-        self.emb = nn.Embedding(vocab_size_tcm, d_txt)
 
-        self.dir_left = nn.Parameter(torch.randn(1, 1, d_txt))
+        # critical: padding_idx zeroes the PAD row and keeps it frozen
+        self.emb = nn.Embedding(vocab_size_tcm, d_txt, padding_idx=pad_id)
+
+        # keep direction as learned vectors (not tokens)
+        self.dir_left  = nn.Parameter(torch.randn(1, 1, d_txt))
         self.dir_right = nn.Parameter(torch.randn(1, 1, d_txt))
 
         self.ctx_conv = nn.Conv1d(d_txt, d_txt, kernel_size=3, padding=1)
-
         self.txt_proj = nn.Linear(d_txt, d_vis)
-        self.q_norm = nn.LayerNorm(d_vis)
-        self.kv_norm = nn.LayerNorm(d_vis)
-        self.dropout = nn.Dropout(p_drop)
+        self.q_norm   = nn.LayerNorm(d_vis)
+        self.kv_norm  = nn.LayerNorm(d_vis)
+        self.dropout  = nn.Dropout(p_drop)
         self.classifier = nn.Linear(d_vis, vocab_size_tcm)
+
 
     def _context_to_query(self, ctx_ids, dir_token):
         E = self.emb(ctx_ids)
