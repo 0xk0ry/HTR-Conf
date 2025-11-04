@@ -36,7 +36,7 @@ def get_args_parser() -> argparse.Namespace:
     # Data & Dataloading
     # ---------------------------------------------------------------------
     data = parser.add_argument_group('Data & Dataloading')
-    data.add_argument('--dataset', type=str, choices=['iam', 'read2016', 'lam'],
+    data.add_argument('--dataset', type=str, choices=['iam', 'read2016', 'lam', 'vnondb'],
                       help='Dataset choice')
     data.add_argument('--data-path', type=str, default='./data/iam/lines/',
                       help='Root directory containing image/line data')
@@ -47,7 +47,7 @@ def get_args_parser() -> argparse.Namespace:
     data.add_argument('--test-data-list', type=str, default='./data/iam/test.ln',
                       help='Path to test list file (e.g., .ln)')
     data.add_argument('--nb-cls', default=80, type=int,
-                      help='Number of classes. IAM=79+1, READ2016=89+1, LAM=89+1')
+                      help='Number of classes. IAM=79+1, READ2016=89+1, LAM=89+1, VNOnDB=161+1')
     data.add_argument('--num-workers', default=0, type=int,
                       help='Dataloader worker processes')
     data.add_argument('--img-size', default=[512, 64], type=int, nargs='+',
