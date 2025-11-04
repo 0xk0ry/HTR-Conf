@@ -362,6 +362,25 @@ class HTR_ConvText(nn.Module):
         keep_mask = ~masked_any
         return keep_mask.unsqueeze(-1)
 
+    def generate_span_mask(self, x, mask_ratio, max_span_length):
+        N, L, D = x.shape  # batch, length, dim
+        mask = torch.ones(N, L, 1).to(x.device)
+        span_length = int(L * mask_ratio)
+        num_spans = span_length // max_span_length
+        for i in range(num_spans):
+            idx = torch.randint(L - max_span_length, (1,))
+            mask[:,idx:idx + max_span_length,:] = 0
+        return mask
+
+    def random_masking(self, x, mask_ratio, max_span_length):
+        """
+        Perform per-sample random masking by per-sample shuffling.
+        Per-sample shuffling is done by argsort random noise.
+        x: [N, L, D], sequence
+        """
+        mask = self.generate_span_mask(x, mask_ratio, max_span_length)
+        x_masked = x * mask + (1 - mask) * self.mask_token
+        return x_masked
 
     def forward_features(self, x, use_masking=False,
                          mask_mode="span",
@@ -373,28 +392,8 @@ class HTR_ConvText(nn.Module):
 
         masked_positions_1d = None
         if use_masking:
-            if mask_mode == "random":
-                keep_mask_1d = self.mask_random_1d(x, mask_ratio).float()
-                mask = keep_mask_1d.unsqueeze(-1)
-            elif mask_mode in ("block"):
-                keep_mask = self.mask_block_1d(x, mask_ratio, block_span).float()
-                keep_mask_1d = keep_mask.squeeze(-1)
-                mask = keep_mask
-            elif mask_mode in ("span"):
-                keep_mask = self.mask_span_1d(
-                    x, mask_ratio, max_span_length).float()
-                keep_mask_1d = keep_mask.squeeze(-1)
-                mask = keep_mask
-            else:
-                warnings.warn(
-                    f"Unknown mask_mode '{mask_mode}', defaulting to span.")
-                keep_mask = self.mask_span_1d(
-                    x, mask_ratio, max_span_length).float()
-                keep_mask_1d = keep_mask.squeeze(-1)
-                mask = keep_mask
-            masked_positions_1d = (1.0 - keep_mask_1d).clamp(min=0.0, max=1.0)
-            x = mask * x + (1.0 - mask) * \
-                self.mask_token.expand(x.size(0), x.size(1), x.size(2))
+            x = self.random_masking(x, mask_ratio, max_span_length)
+        x = x + self.pos_embed
         skip_hi = None
         for i, blk in enumerate(self.blocks, 1):
             x = blk(x)
