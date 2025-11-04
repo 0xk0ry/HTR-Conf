@@ -132,6 +132,7 @@ def main():
 
     if getattr(args, 'use_wandb', False):
         try:
+            wandb = importlib.import_module('wandb')
             wandb.init(project=getattr(args, 'wandb_project', 'None'), name=args.exp_name,
                        config=vars(args), dir=args.save_dir)
             logger.info("Weights & Biases logging enabled")
