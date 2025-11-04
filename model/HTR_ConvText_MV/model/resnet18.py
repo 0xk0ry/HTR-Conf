@@ -17,8 +17,6 @@ from .layer import ConvLayer2d, PosCNN
 from timm.models.vision_transformer import Mlp, DropPath
 
 from typing import Any
-
-
 class BaseModule(nn.Module):
     """Base class for all modules"""
 
@@ -30,8 +28,7 @@ class BaseModule(nn.Module):
 
     def __repr__(self):
         return "{}".format(self.__class__.__name__)
-
-
+ 
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -46,10 +43,8 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C //
-                                  self.num_heads).permute(2, 0, 3, 1, 4)
-        # make torchscript happy (cannot use tensor as tuple)
-        q, k, v = qkv.unbind(0)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
@@ -59,7 +54,6 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
-
 
 class LayerScale(nn.Module):
     def __init__(self, dim, init_values=1e-5, inplace=False):
@@ -89,28 +83,20 @@ class Block(nn.Module):
         super().__init__()
         self.norm1 = norm_layer(dim, elementwise_affine=True)
 
-        self.attn = Attention(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.ls1 = LayerScale(
-            dim, init_values=init_values) if init_values else nn.Identity()
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        self.drop_path1 = DropPath(
-            drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
         self.norm2 = norm_layer(dim, elementwise_affine=True)
-        self.mlp = Mlp(in_features=dim, hidden_features=int(
-            dim * mlp_ratio), act_layer=act_layer, drop=drop)
-        self.ls2 = LayerScale(
-            dim, init_values=init_values) if init_values else nn.Identity()
-        self.drop_path2 = DropPath(
-            drop_path) if drop_path > 0. else nn.Identity()
+        self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x):
         x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
-
-
 class MobileViTBlock(BaseModule):
     """
     This class defines the `MobileViT block <https://arxiv.org/abs/2110.02178?context=cs.LG>`_
@@ -135,17 +121,17 @@ class MobileViTBlock(BaseModule):
 
     def __init__(
         self,
-        in_channels=128,
-        transformer_dim=128,
-        n_transformer_blocks=2,
-        head_dim=64,
-        attn_dropout=0.0,
-        dropout=0.0,
-        patch_h=2,
-        patch_w=2,
-        conv_ksize=3,
-        dilation=1,
-        no_fusion=True,
+        in_channels = 128,
+        transformer_dim = 128,
+        n_transformer_blocks = 2,
+        head_dim = 64,
+        attn_dropout = 0.0,
+        dropout = 0.0,
+        patch_h = 2,
+        patch_w = 2,
+        conv_ksize = 3,
+        dilation = 1,
+        no_fusion = True,
     ) -> None:
         conv_3x3_in = ConvLayer2d(
             in_channels=in_channels,
@@ -155,7 +141,7 @@ class MobileViTBlock(BaseModule):
             use_norm=True,
             use_act=True,
             dilation=dilation,
-            padding=1,
+            padding = 1,
         )
         conv_1x1_in = ConvLayer2d(
             in_channels=in_channels,
@@ -181,7 +167,7 @@ class MobileViTBlock(BaseModule):
                 out_channels=in_channels,
                 kernel_size=conv_ksize,
                 stride=1,
-                padding=1,
+                padding = 1,
                 use_norm=True,
                 use_act=True,
             )
@@ -189,18 +175,17 @@ class MobileViTBlock(BaseModule):
         self.local_rep = nn.Sequential()
         self.local_rep.add_module(name="conv_3x3", module=conv_3x3_in)
         self.local_rep.add_module(name="conv_1x1", module=conv_1x1_in)
-        self.pos_pe = PosCNN(in_chans=transformer_dim,
-                             embed_dim=transformer_dim)
+        self.pos_pe = PosCNN(in_chans=transformer_dim, embed_dim=transformer_dim)
         assert transformer_dim % head_dim == 0
         num_heads = transformer_dim // head_dim
-
+ 
         global_rep = [
             Block(
                 dim=transformer_dim,
                 num_heads=num_heads,
-                mlp_ratio=4.0,
-                qkv_bias=True,
-                attn_drop=attn_dropout,
+                mlp_ratio = 4.0,
+                qkv_bias = True,
+                attn_drop = attn_dropout,
                 drop=dropout,
                 norm_layer=nn.LayerNorm,
             )
@@ -226,6 +211,8 @@ class MobileViTBlock(BaseModule):
         self.dilation = dilation
         self.n_blocks = n_transformer_blocks
         self.conv_ksize = conv_ksize
+
+ 
 
     def unfolding(self, feature_map: Tensor) -> Tuple[Tensor, Dict]:
         patch_w, patch_h = self.patch_w, self.patch_h
@@ -261,8 +248,7 @@ class MobileViTBlock(BaseModule):
         # [B, C, N, P] --> [B, P, N, C]
         transposed_fm = reshaped_fm.transpose(1, 3)
         # [B, P, N, C] --> [BP, N, C]
-        patches = transposed_fm.reshape(
-            batch_size * patch_area, num_patches, -1)
+        patches = transposed_fm.reshape(batch_size * patch_area, num_patches, -1)
 
         info_dict = {
             "orig_size": (orig_h, orig_w),
@@ -321,11 +307,11 @@ class MobileViTBlock(BaseModule):
         num_patch_h = info_dict["num_patches_h"]
         num_patch_w = info_dict["num_patches_w"]
         # learn global representations
-
+       
         for j, transformer_layer in enumerate(self.global_rep):
             patches = transformer_layer(patches)
             if j == 0:
-                patches = self.pos_pe(x, num_patch_h, num_patch_w)  # PEG here
+                patches  = self.pos_pe(patches, num_patch_h, num_patch_w)  # PEG here
         # [B x Patch x Patches x C] --> [B x C x Patches x Patch]
         fm = self.folding(patches=patches, info_dict=info_dict)
 
@@ -334,7 +320,6 @@ class MobileViTBlock(BaseModule):
         if self.fusion is not None:
             fm = self.fusion(torch.cat((res, fm), dim=1))
         return fm
-
 
 def conv3x3(in_planes, out_planes, stride=1):
 
@@ -387,14 +372,11 @@ class ResNet18(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=(2, 1), padding=1)
         self.layer1 = self._make_layer(
             BasicBlock, nb_feat // 4, 2, stride=(2, 1))
-        self.mobilevit_block1 = MobileViTBlock(in_channels=nb_feat // 4, transformer_dim=nb_feat // 4, n_transformer_blocks=1,
-                                               head_dim=64, attn_dropout=0.0, dropout=0.0, patch_h=2, patch_w=2, conv_ksize=3, dilation=1, no_fusion=True)
+        self.mobilevit_block1 = MobileViTBlock(in_channels=nb_feat // 4, transformer_dim=nb_feat // 4, n_transformer_blocks=1, head_dim=64, attn_dropout=0.0, dropout=0.0, patch_h=2, patch_w=2, conv_ksize=3, dilation=1, no_fusion=True)
         self.layer2 = self._make_layer(BasicBlock, nb_feat // 2, 2, stride=2)
-        self.mobilevit_block2 = MobileViTBlock(in_channels=nb_feat // 2, transformer_dim=nb_feat//2, n_transformer_blocks=1,
-                                               head_dim=64, attn_dropout=0.0, dropout=0.0, patch_h=2, patch_w=2, conv_ksize=3, dilation=1, no_fusion=True)
+        self.mobilevit_block2 = MobileViTBlock(in_channels=nb_feat // 2, transformer_dim=nb_feat//2, n_transformer_blocks=1, head_dim=64, attn_dropout=0.0, dropout=0.0, patch_h=2, patch_w=2, conv_ksize=3, dilation=1, no_fusion=True)
         self.layer3 = self._make_layer(BasicBlock, nb_feat, 2, stride=2)
-        self.mobilevit_block3 = MobileViTBlock(in_channels=nb_feat, transformer_dim=nb_feat, n_transformer_blocks=1,
-                                               head_dim=64, attn_dropout=0.0, dropout=0.0, patch_h=2, patch_w=2, conv_ksize=3, dilation=1, no_fusion=True)
+        self.mobilevit_block3 = MobileViTBlock(in_channels=nb_feat, transformer_dim=nb_feat, n_transformer_blocks=1, head_dim=64, attn_dropout=0.0, dropout=0.0, patch_h=2, patch_w=2, conv_ksize=3, dilation=1, no_fusion=True)
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
