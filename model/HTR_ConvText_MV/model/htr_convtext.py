@@ -393,7 +393,6 @@ class HTR_ConvText(nn.Module):
         masked_positions_1d = None
         if use_masking:
             x = self.random_masking(x, mask_ratio, max_span_length)
-        x = x + self.pos_embed
         skip_hi = None
         for i, blk in enumerate(self.blocks, 1):
             x = blk(x)
