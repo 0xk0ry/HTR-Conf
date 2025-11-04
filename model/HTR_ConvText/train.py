@@ -185,12 +185,12 @@ def main():
     criterion = torch.nn.CTCLoss(reduction='none', zero_infinity=True)
     converter = utils.CTCLabelConverter(train_dataset.ralph.values())
 
-    stoi, itos, _ = build_tcm_vocab(converter)
+    stoi, itos, pad_id = build_tcm_vocab(converter)
     vocab_size_tcm = len(itos)
     d_vis = model.embed_dim
 
     if args.tcm_enable:
-        tcm_head = TCMHead(d_vis=d_vis, vocab_size_tcm=vocab_size_tcm,
+        tcm_head = TCMHead(d_vis=d_vis, vocab_size_tcm=vocab_size_tcm, pad_id=pad_id,
                            sub_str_len=args.tcm_sub_len).cuda()
         tcm_head.train()
     else:
@@ -367,7 +367,8 @@ def main():
                     }
                     if tcm_head is not None:
                         checkpoint['tcm_head'] = tcm_head.state_dict()
-                    torch.save(checkpoint, os.path.join(args.save_dir, ckpt_name))
+                    torch.save(checkpoint, os.path.join(
+                        args.save_dir, ckpt_name))
                 if val_cer < best_cer:
                     logger.info(
                         f'CER improved from {best_cer:.4f} to {val_cer:.4f}!!!')
